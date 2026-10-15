@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "gomod"
+    directory: "modules/api/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "gomod"
+    directory: "modules/common/certificates/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "gomod"
+    directory: "modules/common/tools/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "gomod"
+    directory: "modules/web/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "npm"
+    directory: "modules/web/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    ignore:
+      # Angular staffs should be manually updated at once.
+      - dependency-name: "@angular*"
+      # K8s modules should be manually updated at once.
+      - dependency-name: "k8s.io/*"

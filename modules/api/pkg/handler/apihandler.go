@@ -115,6 +115,9 @@ func CreateHTTPAPIHandler(iManager integration.Manager) (*restful.Container, err
 		Produces(restful.MIME_JSON)
 	wsContainer.Add(apiV1Ws)
 
+	// Register AI Platform routes (AI Settings, Analyst, Improvement, Security, SRE Agent, Graph, Traffic)
+	apiHandler.installAIRoutes(apiV1Ws)
+
 	integrationHandler := integration.NewHandler(iManager)
 	integrationHandler.Install(apiV1Ws)
 

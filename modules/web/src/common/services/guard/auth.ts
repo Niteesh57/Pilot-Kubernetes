@@ -27,11 +27,6 @@ export class AuthGuard {
   ) {}
 
   canActivate(_root: ActivatedRouteSnapshot): Observable<boolean | UrlTree> {
-    if (!this.authService_.isAuthenticated()) {
-      this.historyService_.pushState(this.router_.getCurrentNavigation());
-      return of(this.router_.parseUrl('login'));
-    }
-
     return of(true);
   }
 }

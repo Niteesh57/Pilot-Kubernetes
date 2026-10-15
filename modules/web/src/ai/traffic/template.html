@@ -1,0 +1,231 @@
+<!--
+Copyright 2017 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+<div class="kd-traffic-container">
+  <!-- Header Card & Filters -->
+  <mat-card class="kd-traffic-card kd-header-card">
+    <div class="kd-header-content">
+      <div class="kd-title-box">
+        <mat-icon color="primary" class="kd-header-icon">hub</mat-icon>
+        <div>
+          <h2>Service Traffic &amp; Dependency Topology</h2>
+          <p class="kd-subtitle">
+            Live discovery of Ingress &rarr; Service &rarr; Pod pathways and inter-service dependencies
+          </p>
+        </div>
+      </div>
+
+      <div class="kd-actions-box">
+        <mat-form-field appearance="outline" class="kd-search-input">
+          <mat-label>Search resources</mat-label>
+          <input matInput [(ngModel)]="searchQuery" placeholder="Filter by name..." />
+          <mat-icon matSuffix>search</mat-icon>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="kd-ns-input">
+          <mat-label>Namespace</mat-label>
+          <input
+            matInput
+            [(ngModel)]="selectedNamespace"
+            placeholder="All namespaces"
+            (keydown.enter)="refresh()"
+          />
+        </mat-form-field>
+
+        <button mat-raised-button color="primary" (click)="refresh()" [disabled]="isLoading">
+          <mat-icon *ngIf="!isLoading">refresh</mat-icon>
+          <mat-spinner *ngIf="isLoading" diameter="20" color="accent"></mat-spinner>
+          <span *ngIf="!isLoading">Refresh</span>
+          <span *ngIf="isLoading">Loading...</span>
+        </button>
+      </div>
+    </div>
+  </mat-card>
+
+  <!-- Error Card -->
+  <mat-card *ngIf="error" class="kd-error-card">
+    <mat-icon color="warn">error_outline</mat-icon>
+    <div>{{ error }}</div>
+  </mat-card>
+
+  <!-- Metric Badges Row -->
+  <div class="kd-metrics-row" *ngIf="graph">
+    <mat-card class="kd-metric-card">
+      <div class="kd-metric-val">{{ ingressCount }}</div>
+      <div class="kd-metric-lbl">Ingress Routes</div>
+    </mat-card>
+    <mat-card class="kd-metric-card">
+      <div class="kd-metric-val">{{ serviceCount }}</div>
+      <div class="kd-metric-lbl">Active Services</div>
+    </mat-card>
+    <mat-card class="kd-metric-card">
+      <div class="kd-metric-val">{{ podCount }}</div>
+      <div class="kd-metric-lbl">Endpoints &amp; Pods</div>
+    </mat-card>
+    <mat-card class="kd-metric-card">
+      <div class="kd-metric-val">{{ graph.edges.length }}</div>
+      <div class="kd-metric-lbl">Live Links</div>
+    </mat-card>
+    <mat-card class="kd-metric-card kd-falkor-card" *ngIf="graphStatus">
+      <div class="kd-metric-val" [class.synced]="graphStatus.connected">
+        {{ graphStatus.connected ? 'Active' : 'Offline' }}
+      </div>
+      <div class="kd-metric-lbl">FalkorDB Graph ({{ graphStatus.nodeCount }} nodes)</div>
+    </mat-card>
+  </div>
+
+  <!-- Topology Canvas & Inspector Layout -->
+  <div class="kd-canvas-layout">
+    <!-- Main Topology Board -->
+    <mat-card class="kd-traffic-card kd-board-card">
+      <div class="kd-filter-toolbar">
+        <div class="kd-kind-tabs">
+          <button
+            mat-stroked-button
+            [class.active]="kindFilter === 'ALL'"
+            (click)="kindFilter = 'ALL'"
+          >
+            All Nodes ({{ graph?.nodes?.length || 0 }})
+          </button>
+          <button
+            mat-stroked-button
+            [class.active]="kindFilter === 'INGRESS'"
+            (click)="kindFilter = 'INGRESS'"
+          >
+            Ingresses ({{ ingressCount }})
+          </button>
+          <button
+            mat-stroked-button
+            [class.active]="kindFilter === 'SERVICE'"
+            (click)="kindFilter = 'SERVICE'"
+          >
+            Services ({{ serviceCount }})
+          </button>
+          <button
+            mat-stroked-button
+            [class.active]="kindFilter === 'POD'"
+            (click)="kindFilter = 'POD'"
+          >
+            Pods ({{ podCount }})
+          </button>
+        </div>
+
+        <div class="kd-legend">
+          <span class="kd-legend-item"><span class="dot ingress"></span> Ingress</span>
+          <span class="kd-legend-item"><span class="dot service"></span> Service</span>
+          <span class="kd-legend-item"><span class="dot pod"></span> Pod</span>
+        </div>
+      </div>
+
+      <!-- Node Cards Grid -->
+      <div class="kd-nodes-grid" *ngIf="filteredNodes.length > 0">
+        <div
+          class="kd-node-card"
+          *ngFor="let node of filteredNodes"
+          [class]="'kind-' + node.kind.toLowerCase()"
+          [class.selected]="selectedNode?.id === node.id"
+          (click)="selectNode(node)"
+        >
+          <div class="kd-node-top">
+            <span class="kd-kind-badge" [class]="node.kind.toLowerCase()">{{ node.kind }}</span>
+            <span class="kd-node-status" [class.healthy]="node.status === 'Running' || node.status === 'Active'">
+              {{ node.status || 'Active' }}
+            </span>
+          </div>
+
+          <div class="kd-node-name" [title]="node.name">{{ node.name }}</div>
+          <div class="kd-node-ns">{{ node.namespace }}</div>
+
+          <div class="kd-node-traffic-stats">
+            <span title="Inbound connections">
+              <mat-icon inline>arrow_downward</mat-icon> {{ getInboundEdges(node.id).length }} in
+            </span>
+            <span title="Outbound connections">
+              <mat-icon inline>arrow_upward</mat-icon> {{ getOutboundEdges(node.id).length }} out
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div *ngIf="filteredNodes.length === 0 && !isLoading" class="kd-empty-state">
+        <mat-icon>bubble_chart</mat-icon>
+        <p>No workloads match the selected filters</p>
+      </div>
+    </mat-card>
+
+    <!-- Side Inspector Drawer -->
+    <mat-card class="kd-traffic-card kd-inspector-card" *ngIf="selectedNode">
+      <div class="kd-inspector-header">
+        <div class="kd-inspector-title">
+          <span class="kd-kind-badge" [class]="selectedNode.kind.toLowerCase()">{{ selectedNode.kind }}</span>
+          <h3>{{ selectedNode.name }}</h3>
+        </div>
+        <button mat-icon-button (click)="closeDrawer()"><mat-icon>close</mat-icon></button>
+      </div>
+
+      <div class="kd-inspector-content">
+        <div class="kd-prop-row">
+          <span class="kd-prop-label">Namespace</span>
+          <span class="kd-prop-value">{{ selectedNode.namespace }}</span>
+        </div>
+        <div class="kd-prop-row">
+          <span class="kd-prop-label">Status</span>
+          <span class="kd-prop-value">{{ selectedNode.status }}</span>
+        </div>
+
+        <!-- Inbound Connections -->
+        <div class="kd-edge-section">
+          <h4>Inbound Routes ({{ getInboundEdges(selectedNode.id).length }})</h4>
+          <div *ngIf="getInboundEdges(selectedNode.id).length === 0" class="kd-edge-empty">
+            No incoming traffic detected
+          </div>
+          <div class="kd-edge-item" *ngFor="let edge of getInboundEdges(selectedNode.id)">
+            <mat-icon color="accent" inline>login</mat-icon>
+            <div class="kd-edge-desc">
+              <strong>{{ getNodeById(edge.source)?.name || edge.source }}</strong>
+              <span *ngIf="edge.port" class="kd-edge-port">:{{ edge.port }}</span>
+              <span class="kd-edge-type">{{ edge.type }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Outbound Connections -->
+        <div class="kd-edge-section">
+          <h4>Outbound Dependencies ({{ getOutboundEdges(selectedNode.id).length }})</h4>
+          <div *ngIf="getOutboundEdges(selectedNode.id).length === 0" class="kd-edge-empty">
+            No external outbound links
+          </div>
+          <div class="kd-edge-item" *ngFor="let edge of getOutboundEdges(selectedNode.id)">
+            <mat-icon color="primary" inline>logout</mat-icon>
+            <div class="kd-edge-desc">
+              <strong>{{ getNodeById(edge.target)?.name || edge.target }}</strong>
+              <span *ngIf="edge.port" class="kd-edge-port">:{{ edge.port }}</span>
+              <span class="kd-edge-type">{{ edge.type }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Labels -->
+        <div class="kd-labels-section" *ngIf="selectedNode.labels">
+          <h4>Labels</h4>
+          <div class="kd-label-chip" *ngFor="let item of selectedNode.labels | keyvalue">
+            <code>{{ item.key }}: {{ item.value }}</code>
+          </div>
+        </div>
+      </div>
+    </mat-card>
+  </div>
+</div>

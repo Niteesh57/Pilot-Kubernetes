@@ -27,6 +27,8 @@ node_modules
 .coverage
 *.swp
 .cached_tools
+bin/
+*.exe
 
 # Helm deps
 charts/kubernetes-dashboard/charts

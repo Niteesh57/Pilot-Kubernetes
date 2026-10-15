@@ -167,6 +167,28 @@ const routes: Routes = [
         loadChildren: () => import('crd/module').then(m => m.CrdModule),
       },
 
+      // AI Platform
+      {
+        path: 'ai/agent',
+        loadChildren: () => import('ai/agent/module').then(m => m.AIAgentModule),
+      },
+      {
+        path: 'ai/analyst',
+        loadChildren: () => import('ai/analyst/module').then(m => m.AIAnalystModule),
+      },
+      {
+        path: 'ai/security',
+        loadChildren: () => import('ai/security/module').then(m => m.AISecurityModule),
+      },
+      {
+        path: 'ai/improve',
+        loadChildren: () => import('ai/improve/module').then(m => m.AIImproveModule),
+      },
+      {
+        path: 'ai/traffic',
+        loadChildren: () => import('ai/traffic/module').then(m => m.TrafficTopologyModule),
+      },
+
       // Others
       {
         path: 'settings',

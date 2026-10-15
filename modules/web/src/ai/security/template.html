@@ -1,0 +1,194 @@
+<!--
+Copyright 2017 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+<div class="kd-security-container">
+  <!-- Header Card & Controls -->
+  <mat-card class="kd-security-card kd-header-card">
+    <div class="kd-header-content">
+      <div class="kd-title-box">
+        <mat-icon color="primary" class="kd-header-icon">security</mat-icon>
+        <div>
+          <h2>AI Security &amp; RBAC Analyzer</h2>
+          <p class="kd-subtitle">
+            Continuous privilege escalation detection, Pod Security Standards audit &amp; automated hardening patches
+          </p>
+        </div>
+      </div>
+
+      <div class="kd-action-box">
+        <mat-form-field appearance="outline" class="kd-ns-input">
+          <mat-label>Namespace</mat-label>
+          <input
+            matInput
+            [(ngModel)]="selectedNamespace"
+            placeholder="All namespaces"
+            (keydown.enter)="runScan()"
+          />
+        </mat-form-field>
+
+        <button mat-raised-button color="primary" (click)="runScan()" [disabled]="isScanning">
+          <mat-icon *ngIf="!isScanning">refresh</mat-icon>
+          <mat-spinner *ngIf="isScanning" diameter="20" color="accent"></mat-spinner>
+          <span *ngIf="!isScanning">Scan Cluster</span>
+          <span *ngIf="isScanning">Scanning...</span>
+        </button>
+      </div>
+    </div>
+  </mat-card>
+
+  <!-- Error Card -->
+  <mat-card *ngIf="error" class="kd-error-card">
+    <mat-icon color="warn">error_outline</mat-icon>
+    <div>{{ error }}</div>
+  </mat-card>
+
+  <!-- Scorecard Banner -->
+  <div *ngIf="response" class="kd-stats-row">
+    <!-- Score Gauge Card -->
+    <mat-card class="kd-security-card kd-score-card">
+      <div class="kd-score-circle" [style.border-color]="getScoreColor(response.score)">
+        <span class="kd-score-num" [style.color]="getScoreColor(response.score)">{{ response.score }}</span>
+        <span class="kd-score-label">/ 100</span>
+      </div>
+      <div class="kd-score-text">
+        <div class="kd-score-title">Security Posture Score</div>
+        <div class="kd-score-desc">
+          {{ response.score >= 80 ? 'Good cluster security compliance' : response.score >= 60 ? 'Moderate security risks identified' : 'Critical security vulnerabilities require immediate action' }}
+        </div>
+      </div>
+    </mat-card>
+
+    <!-- Severity Counters -->
+    <mat-card class="kd-security-card kd-counts-card">
+      <div class="kd-count-item critical" (click)="severityFilter = 'CRITICAL'">
+        <div class="kd-count-num">{{ criticalCount }}</div>
+        <div class="kd-count-label">CRITICAL</div>
+      </div>
+      <div class="kd-count-item high" (click)="severityFilter = 'HIGH'">
+        <div class="kd-count-num">{{ highCount }}</div>
+        <div class="kd-count-label">HIGH</div>
+      </div>
+      <div class="kd-count-item medium" (click)="severityFilter = 'MEDIUM'">
+        <div class="kd-count-num">{{ mediumCount }}</div>
+        <div class="kd-count-label">MEDIUM</div>
+      </div>
+      <div class="kd-count-item low" (click)="severityFilter = 'LOW'">
+        <div class="kd-count-num">{{ lowCount }}</div>
+        <div class="kd-count-label">LOW</div>
+      </div>
+    </mat-card>
+  </div>
+
+  <!-- AI Executive Summary -->
+  <mat-card *ngIf="response?.aiSummary" class="kd-security-card kd-summary-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar color="primary">assessment</mat-icon>
+      <mat-card-title>AI Security Analysis &amp; Attack Surface Evaluation</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <p class="kd-summary-text">{{ response.aiSummary }}</p>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Findings List -->
+  <mat-card *ngIf="response" class="kd-security-card">
+    <div class="kd-table-header">
+      <div class="kd-table-title">
+        <h3>Identified Vulnerabilities &amp; Posture Defects</h3>
+        <span class="kd-count-badge">{{ filteredFindings.length }} items</span>
+      </div>
+
+      <!-- Severity Filter Buttons -->
+      <div class="kd-filter-buttons">
+        <button
+          mat-stroked-button
+          [class.active]="severityFilter === 'ALL'"
+          (click)="severityFilter = 'ALL'"
+        >
+          All ({{ response.findings.length }})
+        </button>
+        <button
+          mat-stroked-button
+          class="btn-critical"
+          [class.active]="severityFilter === 'CRITICAL'"
+          (click)="severityFilter = 'CRITICAL'"
+        >
+          Critical ({{ criticalCount }})
+        </button>
+        <button
+          mat-stroked-button
+          class="btn-high"
+          [class.active]="severityFilter === 'HIGH'"
+          (click)="severityFilter = 'HIGH'"
+        >
+          High ({{ highCount }})
+        </button>
+        <button
+          mat-stroked-button
+          class="btn-medium"
+          [class.active]="severityFilter === 'MEDIUM'"
+          (click)="severityFilter = 'MEDIUM'"
+        >
+          Medium ({{ mediumCount }})
+        </button>
+      </div>
+    </div>
+
+    <div *ngIf="filteredFindings.length === 0" class="kd-empty-state">
+      <mat-icon>verified_user</mat-icon>
+      <p>No vulnerabilities found matching current filter</p>
+    </div>
+
+    <!-- Finding Items -->
+    <div class="kd-findings-list">
+      <div
+        class="kd-finding-row"
+        *ngFor="let item of filteredFindings"
+        [class]="'severity-' + item.severity.toLowerCase()"
+      >
+        <div class="kd-finding-header">
+          <div class="kd-finding-meta">
+            <span class="kd-severity-tag" [class]="item.severity.toLowerCase()">{{ item.severity }}</span>
+            <span class="kd-res-type">{{ item.kind }}</span>
+            <span class="kd-res-name">{{ item.name }}</span>
+            <span *ngIf="item.namespace" class="kd-res-ns">{{ item.namespace }}</span>
+            <span class="kd-category-tag">{{ item.category }}</span>
+          </div>
+
+          <button
+            *ngIf="item.yamlPatch"
+            mat-stroked-button
+            color="primary"
+            (click)="copyYaml(item.yamlPatch)"
+            class="kd-fix-btn"
+          >
+            <mat-icon>content_copy</mat-icon> Copy Remediation YAML
+          </button>
+        </div>
+
+        <div class="kd-finding-body">
+          <div class="kd-finding-issue">{{ item.issue }}</div>
+          <div *ngIf="item.details" class="kd-finding-details">{{ item.details }}</div>
+
+          <div *ngIf="item.yamlPatch" class="kd-patch-container">
+            <div class="kd-patch-label">Hardened Manifest Recommendation:</div>
+            <pre class="kd-yaml-box">{{ item.yamlPatch }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </mat-card>
+</div>

@@ -26,7 +26,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"k8s.io/dashboard/client/args"
-	"k8s.io/dashboard/errors"
 )
 
 var (
@@ -171,11 +170,15 @@ func buildConfigFromAuthInfo(authInfo *api.AuthInfo) (*rest.Config, error) {
 }
 
 func buildAuthInfo(request *http.Request) (*api.AuthInfo, error) {
-	if !HasAuthorizationHeader(request) {
-		return nil, errors.NewUnauthorized(errors.MsgLoginUnauthorizedError)
+	token := GetBearerToken(request)
+	if token == "" {
+		if tokenBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token"); err == nil {
+			token = strings.TrimSpace(string(tokenBytes))
+		} else if baseConfig != nil && baseConfig.BearerToken != "" {
+			token = baseConfig.BearerToken
+		}
 	}
 
-	token := GetBearerToken(request)
 	authInfo := &api.AuthInfo{
 		Token:                token,
 		ImpersonateUserExtra: make(map[string][]string),

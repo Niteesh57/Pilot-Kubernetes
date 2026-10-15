@@ -16,6 +16,6 @@ import {Component} from '@angular/core';
 
 @Component({
   selector: 'kd-settings',
-  template: '<kd-global-settings></kd-global-settings>' + '<kd-local-settings></kd-local-settings>',
+  template: '<kd-ai-settings></kd-ai-settings>' + '<kd-global-settings></kd-global-settings>' + '<kd-local-settings></kd-local-settings>',
 })
 export class SettingsComponent {}

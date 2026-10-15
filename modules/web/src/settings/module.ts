@@ -24,6 +24,7 @@ import {AddFallbackNamespaceDialogComponent} from './global/namespace/adddialog/
 import {NamespaceSettingsComponent} from './global/namespace/component';
 import {EditFallbackNamespaceDialogComponent} from './global/namespace/editdialog/dialog';
 import {SaveAnywayDialogComponent} from './global/saveanywaysdialog/dialog';
+import {AISettingsComponent} from './ai/component';
 import {SettingsHelperService} from './global/service';
 import {LocalSettingsComponent} from './local/component';
 import {SettingsRoutingModule} from './routing';
@@ -31,6 +32,7 @@ import {SettingsRoutingModule} from './routing';
 @NgModule({
   imports: [SharedModule, ComponentsModule, SettingsRoutingModule],
   declarations: [
+    AISettingsComponent,
     GlobalSettingsComponent,
     LocalSettingsComponent,
     SettingsComponent,

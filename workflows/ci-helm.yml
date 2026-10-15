@@ -1,0 +1,53 @@
+# Copyright 2017 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI / Helm
+on:
+  pull_request:
+    paths:
+    - 'charts/**'
+    - '.github/workflows/ci-helm.yml'
+jobs:
+  lint-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Set up Helm
+        uses: azure/setup-helm@v4.3.1
+        with:
+          version: v3.12.1
+      - name: Set up Chart Testing CLI
+        uses: helm/chart-testing-action@v2.7.0
+      - name: Change Detection
+        id: list-changed
+        run: |
+          changed=$(ct list-changed --config=.ct.yml --target-branch ${{ github.event.repository.default_branch }})
+          if [[ -n "$changed" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Lint Chart
+        if: steps.list-changed.outputs.changed == 'true'
+        run: ct lint --config=.ct.yml --target-branch ${{ github.event.repository.default_branch }} --check-version-increment=false
+      - name: Set up Kind
+        if: steps.list-changed.outputs.changed == 'true'
+        uses: helm/kind-action@v1.12.0
+        with:
+          node_image: kindest/node:v1.32.0
+      - name: Install Chart
+        if: steps.list-changed.outputs.changed == 'true'
+        run: ct install --target-branch ${{ github.event.repository.default_branch }}
