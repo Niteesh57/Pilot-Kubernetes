@@ -88,12 +88,32 @@ export interface SecurityFinding {
 export interface SecurityResponse {
   score: number;
   findings: SecurityFinding[];
+  attackPaths?: string[];
   aiSummary?: string;
+}
+
+export interface AgentMessage {
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 export interface AgentRequest {
   namespace?: string;
   query: string;
+  history?: AgentMessage[];
+}
+
+export interface ResourceItem {
+  kind: string; // 'Deployment' | 'Pod' | 'Service'
+  name: string;
+  namespace: string;
+  status?: string;
+}
+
+export interface ResourcesResponse {
+  deployments: ResourceItem[];
+  pods: ResourceItem[];
+  services: ResourceItem[];
 }
 
 export interface AgentStep {
@@ -147,6 +167,43 @@ export interface TopologyGraph {
   timestamp: number;
 }
 
+export interface GraphNode {
+  id: string;
+  name: string;
+  namespace: string;
+  kind: string;
+  status?: string;
+  properties?: {[key: string]: string};
+}
+
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+}
+
+export interface GraphResult {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface BlastRadiusResult {
+  target: GraphNode;
+  dependents: GraphNode[];
+  dependencies: GraphNode[];
+}
+
+export interface AttackPath {
+  serviceAccount: string;
+  namespace: string;
+  binding: string;
+  bindingKind: string;
+  role: string;
+  roleKind: string;
+  severity: string;
+}
+
 @Injectable({providedIn: 'root'})
 export class AIService {
   private readonly apiBase = 'api/v1';
@@ -187,6 +244,13 @@ export class AIService {
     return this.http.post<AgentResponse>(`${this.apiBase}/ai/agent`, req);
   }
 
+  getResources(namespace?: string): Observable<ResourcesResponse> {
+    const url = namespace
+      ? `${this.apiBase}/ai/resources/${namespace}`
+      : `${this.apiBase}/ai/resources`;
+    return this.http.get<ResourcesResponse>(url);
+  }
+
   getGraphStatus(): Observable<GraphStatus> {
     return this.http.get<GraphStatus>(`${this.apiBase}/graph/status`);
   }
@@ -195,8 +259,8 @@ export class AIService {
     return this.http.post<unknown>(`${this.apiBase}/graph/query`, {cypher});
   }
 
-  getBlastRadius(kind: string, namespace: string, name: string): Observable<unknown> {
-    return this.http.get<unknown>(`${this.apiBase}/graph/blastradius/${kind}/${namespace}/${name}`);
+  getBlastRadius(kind: string, namespace: string, name: string): Observable<BlastRadiusResult> {
+    return this.http.get<BlastRadiusResult>(`${this.apiBase}/graph/blastradius/${kind}/${namespace}/${name}`);
   }
 
   getTopology(namespace?: string): Observable<TopologyGraph> {
@@ -204,5 +268,24 @@ export class AIService {
       ? `${this.apiBase}/traffic/${namespace}`
       : `${this.apiBase}/traffic`;
     return this.http.get<TopologyGraph>(url);
+  }
+
+  getGraphTopology(): Observable<GraphResult> {
+    return this.http.get<GraphResult>(`${this.apiBase}/graph/topology`);
+  }
+
+  exploreGraph(kind: string, namespace: string, name: string): Observable<GraphResult> {
+    return this.http.get<GraphResult>(`${this.apiBase}/graph/explore/${kind}/${namespace}/${name}`);
+  }
+
+  getAttackPaths(namespace?: string): Observable<AttackPath[]> {
+    const url = namespace
+      ? `${this.apiBase}/graph/attackpaths/${namespace}`
+      : `${this.apiBase}/graph/attackpaths`;
+    return this.http.get<AttackPath[]>(url);
+  }
+
+  syncGraph(): Observable<void> {
+    return this.http.post<void>(`${this.apiBase}/graph/sync`, {});
   }
 }

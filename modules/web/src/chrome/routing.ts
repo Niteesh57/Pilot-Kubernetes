@@ -176,13 +176,6 @@ const routes: Routes = [
         },
       },
       {
-        path: 'ai/analyst',
-        loadChildren: () => import('ai/analyst/module').then(m => m.AIAnalystModule),
-        data: {
-          breadcrumb: 'AI Diagnostics Studio',
-        },
-      },
-      {
         path: 'ai/security',
         loadChildren: () => import('ai/security/module').then(m => m.AISecurityModule),
         data: {
@@ -200,7 +193,7 @@ const routes: Routes = [
         path: 'ai/traffic',
         loadChildren: () => import('ai/traffic/module').then(m => m.TrafficTopologyModule),
         data: {
-          breadcrumb: 'Service Traffic & Topology',
+          breadcrumb: 'Topology & Graph Explorer',
         },
       },
 

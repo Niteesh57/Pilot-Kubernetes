@@ -15,7 +15,12 @@
 import {Component, OnDestroy, OnInit} from '@angular/core';
 import {Router} from '@angular/router';
 import {Subscription} from 'rxjs';
-import {AIService, GraphStatus, TopologyEdge, TopologyGraph, TopologyNode} from '@common/services/global/ai.service';
+import {
+  AIService,
+  TopologyEdge,
+  TopologyGraph,
+  TopologyNode,
+} from '@common/services/global/ai.service';
 import {NamespaceService} from '@common/services/global/namespace';
 
 export interface LayoutNode extends TopologyNode {
@@ -30,15 +35,7 @@ export interface LayoutEdge extends TopologyEdge {
   path: string;
   midX: number;
   midY: number;
-  label?: string;
-}
-
-export interface GroupCluster {
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+  label: string;
 }
 
 @Component({
@@ -49,7 +46,6 @@ export interface GroupCluster {
 export class TrafficTopologyComponent implements OnInit, OnDestroy {
   isLoading = false;
   graph: TopologyGraph | null = null;
-  graphStatus: GraphStatus | null = null;
   error: string | null = null;
   selectedNamespace = '';
   searchQuery = '';
@@ -67,7 +63,6 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
   // Computed SVG layout
   layoutNodes: LayoutNode[] = [];
   layoutEdges: LayoutEdge[] = [];
-  groupClusters: GroupCluster[] = [];
   svgWidth = 1400;
   svgHeight = 800;
 
@@ -113,16 +108,9 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
         this.calculateLayout();
       },
       error: err => {
-        this.error = err.error?.message || 'Failed to load traffic topology.';
+        this.error = err.error?.message || 'Failed to discover cluster topology.';
         this.isLoading = false;
       },
-    });
-
-    this.aiService.getGraphStatus().subscribe({
-      next: st => {
-        this.graphStatus = st;
-      },
-      error: () => {},
     });
   }
 
@@ -143,7 +131,6 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
     if (!this.graph?.nodes || this.graph.nodes.length === 0) {
       this.layoutNodes = [];
       this.layoutEdges = [];
-      this.groupClusters = [];
       return;
     }
 
@@ -154,12 +141,17 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
     }
     if (this.searchQuery) {
       const q = this.searchQuery.toLowerCase();
-      filtered = filtered.filter(n => n.name.toLowerCase().includes(q) || n.kind.toLowerCase().includes(q));
+      filtered = filtered.filter(
+        n =>
+          n.name.toLowerCase().includes(q) ||
+          n.kind.toLowerCase().includes(q) ||
+          n.namespace.toLowerCase().includes(q),
+      );
     }
 
     const filteredIds = new Set(filtered.map(n => n.id));
 
-    // Categorize into vertical hierarchy layers
+    // Categorize into vertical hierarchy layers:
     // Layer 0: Ingresses
     // Layer 1: Services
     // Layer 2: Workloads (Deployments, StatefulSets, DaemonSets, Jobs, CronJobs)
@@ -169,7 +161,7 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
     const nodeWidth = 230;
     const nodeHeight = 68;
     const xSpacing = 40;
-    const ySpacing = 90;
+    const ySpacing = 95;
 
     for (const raw of filtered) {
       const kind = raw.kind.toLowerCase();
@@ -179,11 +171,23 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
         layerIndex = 0;
       } else if (kind === 'service') {
         layerIndex = 1;
-      } else if (kind === 'deployment' || kind === 'statefulset' || kind === 'daemonset' || kind === 'job' || kind === 'cronjob') {
+      } else if (
+        kind === 'deployment' ||
+        kind === 'statefulset' ||
+        kind === 'daemonset' ||
+        kind === 'job' ||
+        kind === 'cronjob'
+      ) {
         layerIndex = 2;
       } else if (kind === 'pod') {
         layerIndex = 3;
-      } else if (kind === 'configmap' || kind === 'secret' || kind === 'serviceaccount' || kind === 'pvc') {
+      } else if (
+        kind === 'configmap' ||
+        kind === 'secret' ||
+        kind === 'serviceaccount' ||
+        kind === 'pvc' ||
+        kind === 'persistentvolumeclaim'
+      ) {
         layerIndex = 4;
       }
 
@@ -206,7 +210,7 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
     }
 
     const contentWidth = Math.max(1200, maxNodesInLayer * (nodeWidth + xSpacing) + 120);
-    const startY = 50;
+    const startY = 40;
 
     const positionedNodes: LayoutNode[] = [];
     const posMap = new Map<string, LayoutNode>();
@@ -238,13 +242,13 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
         const tgt = posMap.get(edge.target);
         if (!src || !tgt) continue;
 
-        // Connect from bottom-center of source to top-center of target (or top-to-bottom)
+        // Connect from bottom-center of source to top-center of target
         const sx = src.x + src.width / 2;
         const sy = src.y + src.height;
         const tx = tgt.x + tgt.width / 2;
         const ty = tgt.y;
 
-        const deltaY = Math.max(30, (ty - sy) / 2);
+        const deltaY = Math.max(30, Math.abs(ty - sy) / 2);
         const path = `M ${sx} ${sy} C ${sx} ${sy + deltaY}, ${tx} ${ty - deltaY}, ${tx} ${ty}`;
         const midX = (sx + tx) / 2;
         const midY = (sy + ty) / 2;
@@ -254,7 +258,7 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
           path,
           midX,
           midY,
-          label: edge.port ? `:${edge.port}` : '',
+          label: edge.port ? `:${edge.port}` : edge.type || '',
         });
       }
     }
@@ -262,7 +266,7 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
     this.layoutNodes = positionedNodes;
     this.layoutEdges = layoutEdges;
     this.svgWidth = contentWidth + 100;
-    this.svgHeight = startY + layers.length * (nodeHeight + ySpacing) + 100;
+    this.svgHeight = startY + layers.length * (nodeHeight + ySpacing) + 120;
   }
 
   // Pan and Zoom
@@ -271,7 +275,7 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
   }
 
   zoomOut(): void {
-    this.zoomScale = Math.max(0.4, this.zoomScale - 0.15);
+    this.zoomScale = Math.max(0.35, this.zoomScale - 0.15);
   }
 
   resetZoom(): void {
@@ -306,21 +310,26 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
   }
 
   runRCA(node: TopologyNode): void {
-    this.router.navigate(['/ai/analyst'], {
+    this.router.navigate(['/ai/agent'], {
       queryParams: {
-        kind: node.kind,
-        name: node.name,
-        namespace: node.namespace,
+        query: `Investigate health, logs, and events for ${node.kind} ${node.name} in namespace ${node.namespace}`,
       },
     });
   }
 
   getStatusClass(status: string): string {
     const s = (status || '').toLowerCase();
-    if (s === 'running' || s === 'active' || s === 'completed' || s === 'bound' || s.includes('replicas')) {
+    if (
+      s === 'running' ||
+      s === 'active' ||
+      s === 'completed' ||
+      s === 'bound' ||
+      s.includes('replicas') ||
+      s === 'ready'
+    ) {
       return 'status-healthy';
     }
-    if (s === 'pending' || s === 'containercreating' || s === 'scaled down') {
+    if (s === 'pending' || s === 'containercreating' || s === 'scaled down' || s === 'notready') {
       return 'status-warning';
     }
     return 'status-error';

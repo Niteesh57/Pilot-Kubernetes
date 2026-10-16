@@ -1,0 +1,51 @@
+{{- if .Values.falkordb.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.falkordb.service.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubernetes-dashboard.labels" . | nindent 4 }}
+    app.kubernetes.io/name: falkordb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: falkordb
+  template:
+    metadata:
+      labels:
+        {{- include "kubernetes-dashboard.labels" . | nindent 8 }}
+        app.kubernetes.io/name: falkordb
+    spec:
+      containers:
+        - name: falkordb
+          image: "{{ .Values.falkordb.image.repository }}:{{ .Values.falkordb.image.tag }}"
+          imagePullPolicy: {{ .Values.app.image.pullPolicy }}
+          ports:
+            - containerPort: 6379
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.falkordb.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.falkordb.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.falkordb.service.name }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}

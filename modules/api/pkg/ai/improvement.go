@@ -203,7 +203,86 @@ spec:
 		}
 	}
 
+	// Always ensure an authoritative Markdown assessment is returned so the card displays on every run/re-audit
+	if result.AISummary == "" {
+		result.AISummary = generateFallbackImprovementMarkdown(totalScanned, findings, namespace)
+	}
+
 	return result, nil
+}
+
+func generateFallbackImprovementMarkdown(totalScanned int, findings []ImprovementFinding, namespace string) string {
+	counts := map[string]int{"critical": 0, "warning": 0, "info": 0}
+	var missingLimits, missingProbes, spofFindings, deadServices []ImprovementFinding
+
+	for _, f := range findings {
+		counts[f.Severity]++
+		if strings.Contains(f.Issue, "resource limits") {
+			missingLimits = append(missingLimits, f)
+		} else if strings.Contains(f.Issue, "liveness") || strings.Contains(f.Issue, "readiness") {
+			missingProbes = append(missingProbes, f)
+		} else if strings.Contains(f.Issue, "Single-replica") {
+			spofFindings = append(spofFindings, f)
+		} else if strings.Contains(f.Issue, "no ready endpoints") {
+			deadServices = append(deadServices, f)
+		}
+	}
+
+	targetScope := "Entire Cluster"
+	if namespace != "" && namespace != "all" && namespace != "_all" {
+		targetScope = fmt.Sprintf("Namespace: %s", namespace)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("### Reliability & Hygiene Assessment (%s)\n", targetScope))
+	sb.WriteString(fmt.Sprintf("Reliability evaluation scanned **%d total workloads** across the cluster. Detected **%d actionable hygiene and resiliency findings** (%d critical, %d warnings, %d informational).\n\n",
+		totalScanned, len(findings), counts["critical"], counts["warning"], counts["info"]))
+
+	if len(findings) == 0 {
+		sb.WriteString("All analyzed workloads enforce strict CPU/memory limits, healthy probe configurations, and high availability redundancy. The cluster reliability posture is currently optimal.\n")
+		return sb.String()
+	}
+
+	sb.WriteString("### Key Optimization Priorities\n")
+	priorityIdx := 1
+	if len(deadServices) > 0 {
+		sb.WriteString(fmt.Sprintf("%d. **Unhealthy Service Endpoints (%d services)**: Services have 0 ready endpoints. Traffic to these services is actively failing.\n", priorityIdx, len(deadServices)))
+		priorityIdx++
+	}
+	if len(missingLimits) > 0 {
+		sb.WriteString(fmt.Sprintf("%d. **Resource Limits & Requests (%d containers)**: Workloads lack CPU/memory boundaries, exposing nodes to noisy-neighbor resource starvation and unexpected out-of-memory (OOM) eviction cascades.\n", priorityIdx, len(missingLimits)))
+		priorityIdx++
+	}
+	if len(spofFindings) > 0 {
+		sb.WriteString(fmt.Sprintf("%d. **High Availability & Single Points of Failure (%d deployments)**: Workloads run with a single replica without autoscaling (HPA). Node maintenance or pod restarts cause unmitigated service outages.\n", priorityIdx, len(spofFindings)))
+		priorityIdx++
+	}
+	if len(missingProbes) > 0 {
+		sb.WriteString(fmt.Sprintf("%d. **Health Probes (%d containers)**: Containers lack liveness or readiness probes, impairing Kubernetes' ability to self-heal hung containers or route traffic around startup delays.\n", priorityIdx, len(missingProbes)))
+		priorityIdx++
+	}
+
+	sb.WriteString("\n### Actionable Remediation Commands & Manifests\n")
+	sb.WriteString("```bash\n")
+	count := 0
+	for _, f := range findings {
+		if f.YAMLPatch != "" {
+			lines := strings.Split(f.YAMLPatch, "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(strings.TrimSpace(line), "#") {
+					sb.WriteString(fmt.Sprintf("%s\n", line))
+				}
+			}
+			count++
+			if count >= 3 {
+				break
+			}
+		}
+	}
+	sb.WriteString("# Verify cluster workload health\nkubectl get deployments,services -A --field-selector metadata.namespace!=kube-system\n")
+	sb.WriteString("```\n")
+
+	return sb.String()
 }
 
 func buildFindingsSummary(findings []ImprovementFinding) string {

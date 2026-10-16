@@ -1,0 +1,19 @@
+{{- if .Values.falkordb.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.falkordb.service.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubernetes-dashboard.labels" . | nindent 4 }}
+    app.kubernetes.io/name: falkordb
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: falkordb
+  ports:
+    - name: redis
+      port: {{ .Values.falkordb.service.port }}
+      targetPort: 6379
+      protocol: TCP
+{{- end }}

@@ -15,21 +15,22 @@
 package handler
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"strings"
+	"unicode"
 
 	restful "github.com/emicklei/go-restful/v3"
 
+	kubernetes "k8s.io/client-go/kubernetes"
 	"k8s.io/dashboard/api/pkg/ai"
 	"k8s.io/dashboard/api/pkg/graph"
 	"k8s.io/dashboard/api/pkg/traffic"
 	"k8s.io/dashboard/client"
 	"k8s.io/dashboard/errors"
-	kubernetes "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
-
-// graphClient is the singleton FalkorDB client, initialized lazily.
-var graphClient *graph.Client
 
 // installAIRoutes registers all AI Platform routes on the given WebService.
 // Call this from CreateHTTPAPIHandler after wsContainer.Add(apiV1Ws).
@@ -90,6 +91,15 @@ func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
 		Reads(ai.AgentRequest{}).
 		Returns(http.StatusOK, "OK", ai.AgentResponse{}))
 
+	ws.Route(ws.GET("/ai/resources").To(apiHandler.handleAIResources).
+		Doc("Returns available deployments, pods, and services for @mention autocomplete").
+		Returns(http.StatusOK, "OK", ai.ResourcesResponse{}))
+
+	ws.Route(ws.GET("/ai/resources/{namespace}").To(apiHandler.handleAIResources).
+		Doc("Returns available deployments, pods, and services in a namespace for @mention autocomplete").
+		Param(ws.PathParameter("namespace", "target namespace")).
+		Returns(http.StatusOK, "OK", ai.ResourcesResponse{}))
+
 	// ─── FalkorDB Graph ───────────────────────────────────────────
 	ws.Route(ws.GET("/graph/status").To(apiHandler.handleGraphStatus).
 		Doc("Returns FalkorDB connection status and graph statistics").
@@ -100,10 +110,34 @@ func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
 		Returns(http.StatusOK, "OK", nil))
 
 	ws.Route(ws.GET("/graph/blastradius/{kind}/{namespace}/{name}").To(apiHandler.handleBlastRadius).
-		Doc("Computes the blast radius (dependent resources) for the given resource").
+		Doc("Computes the blast radius (dependents and dependencies) for the given resource").
 		Param(ws.PathParameter("kind", "resource kind (Pod, Service, Deployment, etc.)")).
 		Param(ws.PathParameter("namespace", "namespace of the resource")).
 		Param(ws.PathParameter("name", "name of the resource")).
+		Returns(http.StatusOK, "OK", graph.BlastRadiusResult{}))
+
+	ws.Route(ws.GET("/graph/topology").To(apiHandler.handleGraphTopology).
+		Doc("Returns the full typed cluster knowledge graph from FalkorDB").
+		Returns(http.StatusOK, "OK", graph.GraphResult{}))
+
+	ws.Route(ws.GET("/graph/explore/{kind}/{namespace}/{name}").To(apiHandler.handleGraphExplore).
+		Doc("Returns the typed neighborhood subgraph for the given resource").
+		Param(ws.PathParameter("kind", "resource kind")).
+		Param(ws.PathParameter("namespace", "namespace of the resource")).
+		Param(ws.PathParameter("name", "name of the resource")).
+		Returns(http.StatusOK, "OK", graph.GraphResult{}))
+
+	ws.Route(ws.GET("/graph/attackpaths").To(apiHandler.handleAttackPaths).
+		Doc("Returns privilege-escalation attack paths across all namespaces").
+		Returns(http.StatusOK, "OK", []graph.AttackPath{}))
+
+	ws.Route(ws.GET("/graph/attackpaths/{namespace}").To(apiHandler.handleAttackPaths).
+		Doc("Returns privilege-escalation attack paths for a namespace").
+		Param(ws.PathParameter("namespace", "namespace to inspect")).
+		Returns(http.StatusOK, "OK", []graph.AttackPath{}))
+
+	ws.Route(ws.POST("/graph/sync").To(apiHandler.handleGraphSync).
+		Doc("Triggers an immediate cluster-to-graph synchronization cycle").
 		Returns(http.StatusOK, "OK", nil))
 
 	// ─── Traffic Topology ─────────────────────────────────────────
@@ -169,9 +203,13 @@ func (apiHandler *APIHandler) handleSaveAISettings(request *restful.Request, res
 		return
 	}
 
-	// Reinitialise graph client if FalkorDB settings changed
+	// Reinitialise graph client/syncer if FalkorDB settings changed.
 	if settings.FalkorDBAddr != "" {
-		graphClient = graph.NewClient(settings.FalkorDBAddr, settings.FalkorDBPassword, settings.FalkorDBGraphName)
+		if manager := graph.GetManager(); manager != nil {
+			manager.ReloadClient(settings.FalkorDBAddr, settings.FalkorDBPassword, settings.FalkorDBGraphName)
+		} else {
+			graph.SetDefaultClient(graph.NewClient(settings.FalkorDBAddr, settings.FalkorDBPassword, settings.FalkorDBGraphName))
+		}
 	}
 
 	response.WriteHeader(http.StatusOK)
@@ -203,7 +241,7 @@ func (apiHandler *APIHandler) handleAnalyst(request *restful.Request, response *
 	}
 
 	settings := ai.LoadAISettings(k8sClient)
-	result, err := ai.RunAnalysis(request.Request.Context(), k8sClient, settings, req)
+	result, err := ai.RunAnalysis(request.Request.Context(), k8sClient, settings, req, newGraphContextProvider(request))
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -248,6 +286,7 @@ func (apiHandler *APIHandler) handleSecurity(request *restful.Request, response 
 		errors.HandleInternalError(response, err)
 		return
 	}
+	enrichSecurityAttackPaths(request, namespace, result)
 	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
 }
 
@@ -267,12 +306,24 @@ func (apiHandler *APIHandler) handleAgent(request *restful.Request, response *re
 	}
 
 	settings := ai.LoadAISettings(k8sClient)
-	result, err := ai.RunAgentQuery(request.Request.Context(), k8sClient, settings, req)
+	result, err := ai.RunAgentQuery(request.Request.Context(), k8sClient, settings, req, newGraphContextProvider(request))
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
 	}
 	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
+}
+
+func (apiHandler *APIHandler) handleAIResources(request *restful.Request, response *restful.Response) {
+	k8sClient, err := getK8sClient(request.Request)
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+
+	namespace := request.PathParameter("namespace")
+	res := ai.GetResourcesForAutocomplete(request.Request.Context(), k8sClient, namespace)
+	_ = response.WriteHeaderAndEntity(http.StatusOK, res)
 }
 
 // ─── Graph Handlers ───────────────────────────────────────────────────────────
@@ -304,6 +355,10 @@ func (apiHandler *APIHandler) handleGraphQuery(request *restful.Request, respons
 		errors.HandleInternalError(response, err)
 		return
 	}
+	if err := validateReadOnlyCypher(body.Cypher); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
 
 	result, err := gc.Query(request.Request.Context(), body.Cypher)
 	if err != nil {
@@ -332,6 +387,69 @@ func (apiHandler *APIHandler) handleBlastRadius(request *restful.Request, respon
 	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
 }
 
+func (apiHandler *APIHandler) handleGraphTopology(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+
+	result, err := gc.Topology(request.Request.Context())
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
+}
+
+func (apiHandler *APIHandler) handleGraphExplore(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+
+	kind := request.PathParameter("kind")
+	namespace := request.PathParameter("namespace")
+	name := request.PathParameter("name")
+
+	result, err := gc.Explore(request.Request.Context(), kind, name, namespace)
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
+}
+
+func (apiHandler *APIHandler) handleAttackPaths(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+
+	namespace := request.PathParameter("namespace")
+	result, err := gc.AttackPaths(request.Request.Context(), namespace)
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
+}
+
+func (apiHandler *APIHandler) handleGraphSync(request *restful.Request, response *restful.Response) {
+	manager := graph.GetManager()
+	if manager == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+	if err := manager.SyncNow(request.Request.Context()); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusOK)
+}
+
 // ─── Traffic Handler ──────────────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleTraffic(request *restful.Request, response *restful.Response) {
@@ -353,8 +471,8 @@ func (apiHandler *APIHandler) handleTraffic(request *restful.Request, response *
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 func getGraphClient(request *restful.Request) *graph.Client {
-	if graphClient != nil {
-		return graphClient
+	if gc := graph.DefaultClient(); gc != nil {
+		return gc
 	}
 	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
@@ -364,9 +482,67 @@ func getGraphClient(request *restful.Request) *graph.Client {
 	if settings.FalkorDBAddr == "" {
 		return nil
 	}
-	graphClient = graph.NewClient(settings.FalkorDBAddr, settings.FalkorDBPassword, settings.FalkorDBGraphName)
+	gc := graph.NewClient(settings.FalkorDBAddr, settings.FalkorDBPassword, settings.FalkorDBGraphName)
+	graph.SetDefaultClient(gc)
 	klog.InfoS("FalkorDB client initialised", "addr", settings.FalkorDBAddr, "graph", settings.FalkorDBGraphName)
-	return graphClient
+	return gc
+}
+
+type graphContextProvider struct {
+	client *graph.Client
+}
+
+func (p *graphContextProvider) ContextForResource(ctx context.Context, kind, name, namespace string) (string, error) {
+	result, err := p.client.Explore(ctx, kind, name, namespace)
+	if err != nil {
+		return "", err
+	}
+	return result.Describe(), nil
+}
+
+func (p *graphContextProvider) BlastRadiusSummary(ctx context.Context, kind, name, namespace string) (string, error) {
+	result, err := p.client.BlastRadius(ctx, kind, name, namespace)
+	if err != nil {
+		return "", err
+	}
+	return result.Describe(), nil
+}
+
+func newGraphContextProvider(request *restful.Request) ai.GraphContextProvider {
+	gc := getGraphClient(request)
+	if gc == nil {
+		return nil
+	}
+	return &graphContextProvider{client: gc}
+}
+
+func enrichSecurityAttackPaths(request *restful.Request, namespace string, result *ai.SecurityResponse) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		return
+	}
+	paths, err := gc.AttackPaths(request.Request.Context(), namespace)
+	if err != nil {
+		return
+	}
+	for _, p := range paths {
+		result.AttackPaths = append(result.AttackPaths, fmt.Sprintf(
+			"%s/%s -> %s -> %s [%s]", p.ServiceAccount, p.Namespace, p.Binding, p.Role, p.Severity))
+	}
+}
+
+// validateReadOnlyCypher rejects queries containing mutating Cypher clauses.
+func validateReadOnlyCypher(cypher string) error {
+	tokens := strings.FieldsFunc(strings.ToUpper(cypher), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for _, token := range tokens {
+		switch token {
+		case "CREATE", "DELETE", "MERGE", "SET", "DROP", "REMOVE":
+			return fmt.Errorf("read-only query rejected: '%s' clause is not allowed", token)
+		}
+	}
+	return nil
 }
 
 func isAPIKeyMasked(key string) bool {

@@ -15,47 +15,54 @@ limitations under the License.
 -->
 
 <div class="kd-traffic-container">
-  <!-- Header Card & Filters -->
+  <!-- Header Card & Controls -->
   <mat-card class="kd-traffic-card kd-header-card">
     <div class="kd-header-content">
       <div class="kd-title-box">
         <mat-icon color="primary" class="kd-header-icon">hub</mat-icon>
         <div>
-          <h2>Service Traffic &amp; Dependency Topology</h2>
+          <h2>Topology &amp; Graph Explorer</h2>
           <p class="kd-subtitle">
-            Interactive application cluster mapping: Ingress &rarr; Service &rarr; Workloads &rarr; Pods &rarr; Attached Config &amp; Identity
+            Live service interconnections, workload dependency trees &amp; namespace traffic flow
           </p>
         </div>
       </div>
 
       <div class="kd-actions-box">
-        <!-- Namespace Indicator -->
+        <!-- Active Namespace Scope Badge -->
         <div class="kd-scope-badge">
           <mat-icon>layers</mat-icon>
           <span>Scope: <strong>{{ selectedNamespace ? selectedNamespace : 'All Namespaces' }}</strong></span>
         </div>
 
-        <!-- Workload / Application Focus Dropdown -->
-        <mat-form-field appearance="outline" class="kd-group-select">
-          <mat-label>Focus Application / Workload</mat-label>
-          <mat-select [(ngModel)]="selectedGroup" (selectionChange)="onGroupChange()">
+        <!-- Workload / Application Filter Dropdown -->
+        <mat-form-field appearance="outline" class="kd-group-select" *ngIf="availableGroups.length > 0">
+          <mat-label>Workload Focus</mat-label>
+          <mat-select [(value)]="selectedGroup" (selectionChange)="onGroupChange()">
             <mat-option value="ALL">All Applications ({{ availableGroups.length }})</mat-option>
-            <mat-option *ngFor="let g of availableGroups" [value]="g">{{ g }}</mat-option>
+            <mat-option *ngFor="let g of availableGroups" [value]="g">
+              {{ g }}
+            </mat-option>
           </mat-select>
         </mat-form-field>
 
-        <!-- Search Input -->
+        <!-- Search / Filter Field -->
         <mat-form-field appearance="outline" class="kd-search-input">
           <mat-label>Filter nodes</mat-label>
-          <input matInput [(ngModel)]="searchQuery" (ngModelChange)="calculateLayout()" placeholder="Name or kind..." />
+          <input
+            matInput
+            [(ngModel)]="searchQuery"
+            (ngModelChange)="calculateLayout()"
+            placeholder="Search name, kind..."
+          />
           <mat-icon matSuffix>search</mat-icon>
         </mat-form-field>
 
-        <button mat-raised-button color="primary" (click)="refresh()" [disabled]="isLoading">
+        <!-- Refresh Button -->
+        <button mat-stroked-button (click)="refresh()" [disabled]="isLoading" class="kd-refresh-btn">
           <mat-icon *ngIf="!isLoading">refresh</mat-icon>
           <mat-spinner *ngIf="isLoading" diameter="20" color="accent"></mat-spinner>
-          <span *ngIf="!isLoading">Refresh</span>
-          <span *ngIf="isLoading">Loading...</span>
+          <span>Refresh</span>
         </button>
       </div>
     </div>
@@ -67,17 +74,17 @@ limitations under the License.
     <div>{{ error }}</div>
   </mat-card>
 
-  <!-- Interactive SVG Topology Canvas -->
+  <!-- Interactive SVG Topology Canvas Card -->
   <mat-card class="kd-traffic-card kd-canvas-card">
-    <!-- Floating Canvas Controls -->
-    <div class="kd-canvas-controls">
+    <!-- Toolbar: Legend & Zoom Controls -->
+    <div class="kd-canvas-toolbar">
       <div class="kd-legend-bar">
         <span class="legend-pill ingress"><span class="dot"></span> Ingress</span>
         <span class="legend-pill service"><span class="dot"></span> Service</span>
         <span class="legend-pill workload"><span class="dot"></span> Workload</span>
         <span class="legend-pill pod"><span class="dot"></span> Pod</span>
         <span class="legend-pill config"><span class="dot"></span> Config / Secret</span>
-        <span class="legend-pill auth"><span class="dot"></span> ServiceAccount</span>
+        <span class="legend-pill auth"><span class="dot"></span> ServiceAccount / PVC</span>
       </div>
 
       <div class="kd-zoom-tools">
@@ -103,16 +110,19 @@ limitations under the License.
       (mouseup)="endPan()"
       (mouseleave)="endPan()"
     >
+      <!-- Loading State -->
       <div *ngIf="isLoading" class="kd-canvas-loading">
         <mat-spinner diameter="48"></mat-spinner>
-        <span>Discovering cluster topology...</span>
+        <span>Discovering cluster topology for {{ selectedNamespace || 'cluster' }}...</span>
       </div>
 
+      <!-- Empty State -->
       <div *ngIf="!isLoading && layoutNodes.length === 0" class="kd-canvas-empty">
         <mat-icon>account_tree</mat-icon>
-        <p>No resources found in the active scope or matching the filter.</p>
+        <p>No resources found in namespace <strong>{{ selectedNamespace || 'all' }}</strong> matching current filters.</p>
       </div>
 
+      <!-- SVG Graph Layer -->
       <svg
         *ngIf="layoutNodes.length > 0"
         class="kd-topology-svg"
@@ -193,7 +203,7 @@ limitations under the License.
               <!-- Node Name -->
               <text x="16" y="42" class="node-name-title">{{ node.shortName }}</text>
 
-              <!-- Meta subtitle (port / replica / status) -->
+              <!-- Meta subtitle (ports / replicas / podIP / status) -->
               <text x="16" y="58" class="node-meta-subtitle">
                 {{ node.properties?.ports || node.properties?.replicas || node.properties?.podIP || node.status }}
               </text>
@@ -250,7 +260,7 @@ limitations under the License.
 
         <!-- Inbound Connections -->
         <div class="inspector-section">
-          <div class="section-label">Inbound Connections ({{ getInboundEdges(selectedNode.id).length }})</div>
+          <div class="section-label">Inbound Routes ({{ getInboundEdges(selectedNode.id).length }})</div>
           <div *ngIf="getInboundEdges(selectedNode.id).length === 0" class="empty-links">None</div>
           <div class="links-list" *ngIf="getInboundEdges(selectedNode.id).length > 0">
             <div class="link-item" *ngFor="let inEdge of getInboundEdges(selectedNode.id)">
@@ -261,9 +271,9 @@ limitations under the License.
           </div>
         </div>
 
-        <!-- Outbound Connections -->
+        <!-- Outbound Dependencies -->
         <div class="inspector-section">
-          <div class="section-label">Outbound Connections ({{ getOutboundEdges(selectedNode.id).length }})</div>
+          <div class="section-label">Outbound Dependencies ({{ getOutboundEdges(selectedNode.id).length }})</div>
           <div *ngIf="getOutboundEdges(selectedNode.id).length === 0" class="empty-links">None</div>
           <div class="links-list" *ngIf="getOutboundEdges(selectedNode.id).length > 0">
             <div class="link-item" *ngFor="let outEdge of getOutboundEdges(selectedNode.id)">
@@ -277,7 +287,7 @@ limitations under the License.
 
       <div class="inspector-actions">
         <button mat-raised-button color="primary" (click)="runRCA(selectedNode)">
-          <mat-icon>psychology</mat-icon> Run AI Root Cause Analysis
+          <mat-icon>psychology</mat-icon> Investigate with AI Operations
         </button>
       </div>
     </div>

@@ -36,7 +36,7 @@ Provide a structured JSON response with the following fields:
 Return ONLY valid JSON, no other text.`
 
 // RunAnalysis performs root cause analysis on a Kubernetes resource.
-func RunAnalysis(ctx context.Context, k8sClient kubernetes.Interface, settings *AISettings, req *AnalystRequest) (*AnalystResponse, error) {
+func RunAnalysis(ctx context.Context, k8sClient kubernetes.Interface, settings *AISettings, req *AnalystRequest, graphCtx GraphContextProvider) (*AnalystResponse, error) {
 	clusterContext, err := gatherAnalystContext(ctx, k8sClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to gather context: %w", err)
@@ -55,12 +55,21 @@ func RunAnalysis(ctx context.Context, k8sClient kubernetes.Interface, settings *
 		userPrompt += "\n\nAdditional question: " + req.CustomQuery
 	}
 
+	if graphCtx != nil {
+		if summary, err := graphCtx.ContextForResource(ctx, req.Kind, req.Name, req.Namespace); err == nil {
+			userPrompt += "\n\nGraph neighborhood:\n" + summary
+		}
+		if blast, err := graphCtx.BlastRadiusSummary(ctx, req.Kind, req.Name, req.Namespace); err == nil {
+			userPrompt += "\n\n" + blast
+		}
+	}
+
 	rawResponse, err := adapter.Chat(ctx, analystSystemPrompt, userPrompt)
 	if err != nil {
 		return &AnalystResponse{
-			Summary: fmt.Sprintf("Cluster logs and events gathered for %s '%s'. AI provider note: %v. Please verify your AI Settings.", req.Kind, req.Name, err),
+			Summary:   fmt.Sprintf("Cluster logs and events gathered for %s '%s'. AI provider note: %v. Please verify your AI Settings.", req.Kind, req.Name, err),
 			RootCause: "AI Provider call returned an error. Direct cluster diagnostic context was gathered successfully below.",
-			Evidence: clusterContext,
+			Evidence:  clusterContext,
 			Remediation: []string{
 				fmt.Sprintf("kubectl describe %s %s -n %s", strings.ToLower(req.Kind), req.Name, req.Namespace),
 				fmt.Sprintf("kubectl logs %s -n %s --tail=50", req.Name, req.Namespace),

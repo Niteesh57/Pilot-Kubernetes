@@ -1,0 +1,19 @@
+{{- if and .Values.falkordb.enabled .Values.falkordb.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.falkordb.service.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubernetes-dashboard.labels" . | nindent 4 }}
+    app.kubernetes.io/name: falkordb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.falkordb.persistence.size }}
+  {{- with .Values.falkordb.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

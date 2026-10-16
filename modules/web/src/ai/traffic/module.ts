@@ -24,7 +24,7 @@ import {TrafficTopologyComponent} from './component';
       {
         path: '',
         component: TrafficTopologyComponent,
-        data: {breadcrumb: 'Service Traffic & Topology'},
+        data: {breadcrumb: 'Topology & Graph Explorer'},
       },
     ]),
   ],

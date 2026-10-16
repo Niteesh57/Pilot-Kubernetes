@@ -17,6 +17,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -24,22 +25,23 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/dashboard/api/pkg/args"
 )
 
-const (
-	aiSecretName      = "kubepilot-ai-settings"
-	aiSecretNamespace = "kubepilot"
-)
+const aiSecretName = "kubepilot-ai-settings"
+
+var aiSecretNamespace = args.Namespace()
 
 // defaultAISettings returns safe, minimal defaults.
 func defaultAISettings() *AISettings {
+	namespace := args.Namespace()
 	return &AISettings{
-		Provider:         ProviderOpenAI,
-		BaseURL:          "https://api.openai.com/v1",
-		Model:            "gpt-4o-mini",
-		MaxTokens:        2048,
-		Temperature:      0.3,
-		FalkorDBAddr:     "falkordb.kubepilot.svc.cluster.local:6379",
+		Provider:          ProviderOpenAI,
+		BaseURL:           "https://api.openai.com/v1",
+		Model:             "gpt-4o-mini",
+		MaxTokens:         2048,
+		Temperature:       0.3,
+		FalkorDBAddr:      fmt.Sprintf("falkordb.%s.svc.cluster.local:6379", namespace),
 		FalkorDBGraphName: "kubepilot",
 	}
 }

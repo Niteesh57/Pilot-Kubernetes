@@ -114,6 +114,18 @@ limitations under the License.
     </mat-card-content>
   </mat-card>
 
+  <!-- FalkorDB Attack Paths -->
+  <mat-card *ngIf="response?.attackPaths?.length" class="kd-security-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar color="warn">lan</mat-icon>
+      <mat-card-title>FalkorDB Privilege-Escalation Paths</mat-card-title>
+      <mat-card-subtitle>ServiceAccount → Binding → Sensitive Role/ClusterRole</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="kd-attack-path" *ngFor="let p of response.attackPaths">{{ p }}</div>
+    </mat-card-content>
+  </mat-card>
+
   <!-- Findings List -->
   <mat-card *ngIf="response" class="kd-security-card">
     <div class="kd-table-header">

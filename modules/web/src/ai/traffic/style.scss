@@ -1,3 +1,17 @@
+// Copyright 2017 The Kubernetes Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 .kd-traffic-container {
   display: flex;
   flex-direction: column;
@@ -60,12 +74,29 @@
       border-radius: 20px;
       font-size: 12px;
 
-      mat-icon { font-size: 16px; width: 16px; height: 16px; opacity: 0.8; }
+      mat-icon {
+        font-size: 16px;
+        width: 16px;
+        height: 16px;
+        opacity: 0.8;
+      }
     }
 
-    .kd-group-select { width: 220px; margin-bottom: -1.25em; }
-    .kd-search-input { width: 180px; margin-bottom: -1.25em; }
-    button { height: 44px; padding: 0 16px; font-weight: 600; }
+    .kd-group-select {
+      width: 220px;
+      margin-bottom: -1.25em;
+    }
+
+    .kd-search-input {
+      width: 180px;
+      margin-bottom: -1.25em;
+    }
+
+    .kd-refresh-btn {
+      height: 44px;
+      padding: 0 16px;
+      font-weight: 600;
+    }
   }
 }
 
@@ -87,7 +118,7 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.kd-canvas-controls {
+.kd-canvas-toolbar {
   position: absolute;
   top: 12px;
   left: 16px;
@@ -101,7 +132,7 @@
   .kd-legend-bar {
     display: flex;
     gap: 10px;
-    background: rgba(20, 22, 28, 0.85);
+    background: rgba(20, 22, 28, 0.88);
     backdrop-filter: blur(8px);
     padding: 6px 12px;
     border-radius: 20px;
@@ -134,31 +165,43 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    background: rgba(20, 22, 28, 0.85);
+    background: rgba(20, 22, 28, 0.88);
     backdrop-filter: blur(8px);
     padding: 2px 6px;
     border-radius: 20px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     pointer-events: auto;
 
-    button { width: 32px; height: 32px; line-height: 32px; }
-    .zoom-level { font-size: 11px; font-weight: 600; min-width: 36px; text-align: center; }
+    button {
+      width: 32px;
+      height: 32px;
+      line-height: 32px;
+    }
+    .zoom-level {
+      font-size: 11px;
+      font-weight: 600;
+      min-width: 36px;
+      text-align: center;
+    }
   }
 }
 
 .kd-svg-viewport {
   width: 100%;
-  height: 640px;
+  height: 680px;
   overflow: hidden;
   cursor: grab;
   user-select: none;
   background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
   background-size: 24px 24px;
 
-  &.panning { cursor: grabbing; }
+  &.panning {
+    cursor: grabbing;
+  }
 }
 
-.kd-canvas-loading, .kd-canvas-empty {
+.kd-canvas-loading,
+.kd-canvas-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -166,7 +209,13 @@
   height: 100%;
   gap: 12px;
   color: rgba(255, 255, 255, 0.6);
-  mat-icon { font-size: 48px; width: 48px; height: 48px; opacity: 0.5; }
+
+  mat-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    opacity: 0.5;
+  }
 }
 
 /* ─── SVG Elements ─── */
@@ -179,11 +228,12 @@
   &.selected-edge {
     stroke: #00bcd4;
     stroke-width: 3px;
+    filter: drop-shadow(0 0 4px rgba(0, 188, 212, 0.6));
   }
 }
 
 .svg-edge-label {
-  fill: rgba(255, 255, 255, 0.6);
+  fill: rgba(255, 255, 255, 0.65);
   font-size: 10px;
   font-family: Roboto, monospace;
 }
@@ -210,11 +260,17 @@
 
   &.kind-ingress { stroke: #00bcd4; }
   &.kind-service { stroke: #7c4dff; }
-  &.kind-deployment, &.kind-statefulset, &.kind-daemonset, &.kind-job, &.kind-cronjob { stroke: #2196f3; }
+  &.kind-deployment,
+  &.kind-statefulset,
+  &.kind-daemonset,
+  &.kind-job,
+  &.kind-cronjob { stroke: #2196f3; }
   &.kind-pod { stroke: #4caf50; }
-  &.kind-configmap, &.kind-secret { stroke: #ff9800; }
+  &.kind-configmap,
+  &.kind-secret { stroke: #ff9800; }
   &.kind-serviceaccount { stroke: #ffc107; }
-  &.kind-pvc { stroke: #9c27b0; }
+  &.kind-pvc,
+  &.kind-persistentvolumeclaim { stroke: #9c27b0; }
 }
 
 .status-circle {
@@ -268,7 +324,11 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 
     .inspector-title-box {
-      h3 { margin: 6px 0 0; font-size: 16px; word-break: break-all; }
+      h3 {
+        margin: 6px 0 0;
+        font-size: 16px;
+        word-break: break-all;
+      }
       .inspector-kind-badge {
         font-size: 10px;
         font-weight: 700;
@@ -276,6 +336,17 @@
         padding: 2px 8px;
         border-radius: 10px;
         background: rgba(255, 255, 255, 0.1);
+
+        &.ingress { color: #00bcd4; }
+        &.service { color: #7c4dff; }
+        &.deployment,
+        &.statefulset,
+        &.daemonset { color: #2196f3; }
+        &.pod { color: #4caf50; }
+        &.configmap,
+        &.secret { color: #ff9800; }
+        &.serviceaccount { color: #ffc107; }
+        &.pvc { color: #9c27b0; }
       }
     }
   }
@@ -289,8 +360,17 @@
     gap: 16px;
 
     .inspector-section {
-      .section-label { font-size: 11px; text-transform: uppercase; font-weight: 600; opacity: 0.6; margin-bottom: 4px; }
-      .section-val { font-size: 13px; font-weight: 500; }
+      .section-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        font-weight: 600;
+        opacity: 0.6;
+        margin-bottom: 4px;
+      }
+      .section-val {
+        font-size: 13px;
+        font-weight: 500;
+      }
       .status-val.status-healthy { color: #4caf50; }
       .status-val.status-warning { color: #ff9800; }
       .status-val.status-error { color: #f44336; }
@@ -304,7 +384,12 @@
       padding: 10px;
       border-radius: 6px;
       font-size: 12px;
-      .prop-item { display: flex; justify-content: space-between; gap: 8px; }
+
+      .prop-item {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
       .prop-k { opacity: 0.7; }
       .prop-v { font-weight: 600; word-break: break-all; text-align: right; }
     }
@@ -313,6 +398,7 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
+
       .link-item {
         display: flex;
         align-items: center;
@@ -321,7 +407,23 @@
         background: rgba(255, 255, 255, 0.04);
         padding: 6px 10px;
         border-radius: 4px;
-        mat-icon { font-size: 14px; width: 14px; height: 14px; opacity: 0.7; }
+
+        mat-icon {
+          font-size: 14px;
+          width: 14px;
+          height: 14px;
+          opacity: 0.7;
+        }
+
+        .link-port {
+          color: #00bcd4;
+          font-family: monospace;
+        }
+
+        .link-type {
+          opacity: 0.6;
+          font-size: 11px;
+        }
       }
     }
   }
@@ -329,7 +431,11 @@
   .inspector-actions {
     padding: 16px 20px;
     border-top: 1px solid rgba(255, 255, 255, 0.1);
-    button { width: 100%; height: 44px; }
+
+    button {
+      width: 100%;
+      height: 44px;
+    }
   }
 }
 

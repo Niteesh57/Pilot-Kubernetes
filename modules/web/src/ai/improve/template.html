@@ -30,8 +30,8 @@ limitations under the License.
 
       <div class="kd-action-box">
         <div class="kd-scope-badge">
-          <mat-icon>layers</mat-icon>
-          <span>Scope: <strong>{{ selectedNamespace ? selectedNamespace : 'All Namespaces' }}</strong></span>
+          <mat-icon>public</mat-icon>
+          <span>Scope: <strong>Entire Cluster</strong></span>
         </div>
 
         <button mat-raised-button color="primary" (click)="runAudit()" [disabled]="isAuditing">
@@ -57,8 +57,8 @@ limitations under the License.
       <h3>Ready to Audit Reliability &amp; Hygiene</h3>
       <p>
         Click <strong>Run Reliability Audit</strong> to evaluate CPU/memory resource limits, liveness and readiness probes,
-        single-replica single point of failures, and eviction vulnerabilities for 
-        <strong>{{ selectedNamespace ? 'namespace ' + selectedNamespace : 'all namespaces in the cluster' }}</strong>.
+        single-replica single point of failures, and eviction vulnerabilities across 
+        <strong>all workloads in the entire cluster</strong>.
       </p>
       <button mat-raised-button color="primary" (click)="runAudit()">
         <mat-icon>play_arrow</mat-icon> Run Reliability Audit

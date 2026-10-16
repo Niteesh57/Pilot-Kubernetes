@@ -12,75 +12,425 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {Component, OnInit} from '@angular/core';
-import {FormBuilder, FormGroup, Validators} from '@angular/forms';
+import {
+  AfterViewChecked,
+  Component,
+  ElementRef,
+  OnDestroy,
+  OnInit,
+  ViewChild,
+} from '@angular/core';
+import {ActivatedRoute} from '@angular/router';
 import {MatSnackBar} from '@angular/material/snack-bar';
-import {AIService, AgentRequest, AgentResponse} from '@common/services/global/ai.service';
+import {Subscription} from 'rxjs';
+import {
+  AIService,
+  AgentMessage,
+  AgentRequest,
+  AgentResponse,
+  ResourceItem,
+  ResourcesResponse,
+} from '@common/services/global/ai.service';
+import {NamespaceService} from '@common/services/global/namespace';
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: Date;
+  response?: AgentResponse;
+  stepsExpanded?: boolean;
+}
+
+export interface MentionOption {
+  label: string;
+  insertValue: string;
+  kind: 'deployment' | 'pod' | 'service' | 'category';
+  name: string;
+  namespace?: string;
+  status?: string;
+}
 
 @Component({
   selector: 'kd-ai-agent',
   templateUrl: './template.html',
   styleUrls: ['./style.scss'],
 })
-export class AIAgentComponent implements OnInit {
-  form: FormGroup;
-  isRunning = false;
-  response: AgentResponse | null = null;
-  error: string | null = null;
+export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
+  @ViewChild('chatScrollContainer') private chatScrollContainer_?: ElementRef<HTMLDivElement>;
+  @ViewChild('chatInput') private chatInput_?: ElementRef<HTMLTextAreaElement>;
 
-  readonly samplePrompts = [
-    'Analyze all degraded or crashlooping pods and determine root cause',
-    'Audit RBAC permissions for overprivileged ServiceAccounts',
-    'Investigate inter-service communication latency and failed endpoints',
-    'Generate least-privilege NetworkPolicy for backend services',
-    'Assess blast radius and dependent workloads if worker node is drained',
+  messages: ChatMessage[] = [];
+  inputText = '';
+  isThinking = false;
+  error: string | null = null;
+  selectedNamespace = '';
+
+  // Autocomplete Mentions
+  showMentionPopup = false;
+  filteredMentionOptions: MentionOption[] = [];
+  selectedMentionIndex = 0;
+  private currentMentionStartIndex = -1;
+
+  // Cached Resources for @mention
+  private resources: ResourcesResponse = {deployments: [], pods: [], services: []};
+  private nsSub_?: Subscription;
+  private queryParamsSub_?: Subscription;
+  private shouldScrollBottom = false;
+
+  readonly quickPrompts = [
+    {
+      title: 'Analyze Degraded Workloads',
+      query: 'Analyze all degraded or crashlooping pods and determine root cause',
+      icon: 'warning',
+    },
+    {
+      title: 'Inter-Service Latency',
+      query: 'Investigate inter-service communication latency and failure endpoints',
+      icon: 'sync_alt',
+    },
+    {
+      title: 'Audit RBAC Privileges',
+      query: 'Audit RBAC permissions for overprivileged ServiceAccounts and cluster-admin bindings',
+      icon: 'policy',
+    },
+    {
+      title: 'Node Drain Blast Radius',
+      query: 'Assess blast radius and dependent workloads if worker node is drained',
+      icon: 'hub',
+    },
   ];
 
   constructor(
-    private readonly fb: FormBuilder,
     private readonly aiService: AIService,
+    private readonly namespaceService_: NamespaceService,
     private readonly snackBar: MatSnackBar,
+    private readonly route: ActivatedRoute,
   ) {}
 
   ngOnInit(): void {
-    this.form = this.fb.group({
-      namespace: [''],
-      query: ['', [Validators.required, Validators.minLength(3)]],
+    this.selectedNamespace = this.getActiveNamespace();
+    this.loadResources();
+
+    this.nsSub_ = this.namespaceService_.onNamespaceChangeEvent.subscribe(() => {
+      this.selectedNamespace = this.getActiveNamespace();
+      this.loadResources();
+    });
+
+    this.queryParamsSub_ = this.route.queryParams.subscribe(params => {
+      if (params['query']) {
+        this.inputText = params['query'];
+        this.sendMessage();
+      }
     });
   }
 
-  useSample(prompt: string): void {
-    this.form.patchValue({query: prompt});
-    this.submit();
+  ngOnDestroy(): void {
+    this.nsSub_?.unsubscribe();
+    this.queryParamsSub_?.unsubscribe();
   }
 
-  submit(): void {
-    if (this.form.invalid || this.isRunning) return;
+  ngAfterViewChecked(): void {
+    if (this.shouldScrollBottom) {
+      this.scrollToBottom();
+      this.shouldScrollBottom = false;
+    }
+  }
 
-    this.isRunning = true;
+  getActiveNamespace(): string {
+    const ns = this.namespaceService_.current();
+    if (!ns || ns === '_all' || this.namespaceService_.areMultipleNamespacesSelected()) {
+      return '';
+    }
+    return ns;
+  }
+
+  loadResources(): void {
+    this.aiService.getResources(this.selectedNamespace || undefined).subscribe({
+      next: res => {
+        this.resources = res;
+      },
+      error: () => {
+        // Fallback gracefully
+        this.resources = {deployments: [], pods: [], services: []};
+      },
+    });
+  }
+
+  // ─── Chat Message Actions ──────────────────────────────────────────────────
+
+  sendMessage(customText?: string): void {
+    const textToSend = (customText !== undefined ? customText : this.inputText).trim();
+    if (!textToSend || this.isThinking) return;
+
+    this.showMentionPopup = false;
+    const userMsg: ChatMessage = {
+      id: 'usr_' + Date.now(),
+      role: 'user',
+      text: textToSend,
+      timestamp: new Date(),
+    };
+    this.messages.push(userMsg);
+    this.inputText = '';
     this.error = null;
-    this.response = null;
+    this.isThinking = true;
+    this.shouldScrollBottom = true;
+
+    // Build conversation history from prior messages
+    const history: AgentMessage[] = this.messages.slice(0, -1).map(m => ({
+      role: m.role,
+      content: m.text,
+    }));
 
     const req: AgentRequest = {
-      namespace: this.form.value.namespace || undefined,
-      query: this.form.value.query.trim(),
+      namespace: this.selectedNamespace || undefined,
+      query: textToSend,
+      history: history.length > 0 ? history : undefined,
     };
 
     this.aiService.runAgent(req).subscribe({
       next: res => {
-        this.response = res;
-        this.isRunning = false;
+        const assistantMsg: ChatMessage = {
+          id: 'asst_' + Date.now(),
+          role: 'assistant',
+          text: res.summary,
+          response: res,
+          stepsExpanded: false,
+          timestamp: new Date(),
+        };
+        this.messages.push(assistantMsg);
+        this.isThinking = false;
+        this.shouldScrollBottom = true;
       },
       error: err => {
-        this.error = err.error?.message || 'Agent query failed. Please verify AI Settings and cluster connectivity.';
-        this.isRunning = false;
+        this.error = err.error?.message || 'SRE Agent encountered an error executing query.';
+        this.isThinking = false;
+        this.shouldScrollBottom = true;
       },
     });
   }
 
-  copyToClipboard(text: string): void {
+  clearChat(): void {
+    this.messages = [];
+    this.error = null;
+  }
+
+  useQuickPrompt(promptText: string): void {
+    this.inputText = promptText;
+    if (this.chatInput_) {
+      this.chatInput_.nativeElement.focus();
+    }
+  }
+
+  toggleSteps(msg: ChatMessage): void {
+    msg.stepsExpanded = !msg.stepsExpanded;
+  }
+
+  copyToClipboard(text: string, label: string = 'Copied to clipboard'): void {
     navigator.clipboard.writeText(text).then(() => {
-      this.snackBar.open('Copied to clipboard', 'Dismiss', {duration: 2500});
+      this.snackBar.open(label, 'Dismiss', {duration: 2500});
     });
+  }
+
+  private scrollToBottom(): void {
+    try {
+      if (this.chatScrollContainer_) {
+        this.chatScrollContainer_.nativeElement.scrollTop =
+          this.chatScrollContainer_.nativeElement.scrollHeight;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // ─── @mention Autocomplete Engine ──────────────────────────────────────────
+
+  onInputChange(event: Event): void {
+    const input = event.target as HTMLTextAreaElement;
+    if (!input) return;
+
+    const cursorPos = input.selectionStart || 0;
+    const textBefore = this.inputText.slice(0, cursorPos);
+
+    // Look for last '@' with no space after it
+    const lastAtIndex = textBefore.lastIndexOf('@');
+    if (lastAtIndex >= 0) {
+      const fragment = textBefore.slice(lastAtIndex + 1);
+      // If there is a space after the @ symbol, ignore unless it's within a slash token
+      if (!fragment.includes(' ')) {
+        this.currentMentionStartIndex = lastAtIndex;
+        this.filterMentionOptions(fragment);
+        return;
+      }
+    }
+
+    this.showMentionPopup = false;
+  }
+
+  onKeyDown(event: KeyboardEvent): void {
+    if (this.showMentionPopup && this.filteredMentionOptions.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        this.selectedMentionIndex =
+          (this.selectedMentionIndex + 1) % this.filteredMentionOptions.length;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        this.selectedMentionIndex =
+          (this.selectedMentionIndex - 1 + this.filteredMentionOptions.length) %
+          this.filteredMentionOptions.length;
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        this.selectMentionOption(this.filteredMentionOptions[this.selectedMentionIndex]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        this.showMentionPopup = false;
+        return;
+      }
+    }
+
+    // Submit on Enter (without Shift)
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      this.sendMessage();
+    }
+  }
+
+  private filterMentionOptions(query: string): void {
+    const q = query.toLowerCase().trim();
+    const options: MentionOption[] = [];
+
+    const hasDepPrefix = q.startsWith('dep') || q.startsWith('deployment/');
+    const hasPodPrefix = q.startsWith('pod') || q.startsWith('pod/');
+    const hasSvcPrefix = q.startsWith('svc') || q.startsWith('service') || q.startsWith('service/');
+
+    // 1. If user just typed '@' or '@d' or '@p' or '@s', show category starters first
+    if (q === '' || q === 'd' || q === 'dep') {
+      options.push({
+        label: '@deployment/...',
+        insertValue: '@deployment/',
+        kind: 'category',
+        name: 'Deployments',
+        status: `${this.resources.deployments.length} available`,
+      });
+    }
+    if (q === '' || q === 'p' || q === 'pod') {
+      options.push({
+        label: '@pod/...',
+        insertValue: '@pod/',
+        kind: 'category',
+        name: 'Pods',
+        status: `${this.resources.pods.length} available`,
+      });
+    }
+    if (q === '' || q === 's' || q === 'svc' || q === 'service') {
+      options.push({
+        label: '@service/...',
+        insertValue: '@service/',
+        kind: 'category',
+        name: 'Services',
+        status: `${this.resources.services.length} available`,
+      });
+    }
+
+    // 2. Extract resource-specific search term
+    let depSearch = '';
+    let podSearch = '';
+    let svcSearch = '';
+
+    if (q.includes('/')) {
+      const parts = q.split('/');
+      const kindPart = parts[0];
+      const namePart = parts.slice(1).join('/');
+      if (kindPart.startsWith('dep')) depSearch = namePart;
+      else if (kindPart.startsWith('pod')) podSearch = namePart;
+      else if (kindPart.startsWith('svc') || kindPart.startsWith('service')) svcSearch = namePart;
+    } else {
+      depSearch = q;
+      podSearch = q;
+      svcSearch = q;
+    }
+
+    // Deployments
+    if (hasDepPrefix || (!hasPodPrefix && !hasSvcPrefix)) {
+      for (const d of this.resources.deployments) {
+        if (!depSearch || d.name.toLowerCase().includes(depSearch)) {
+          options.push({
+            label: `@deployment/${d.name}`,
+            insertValue: `@deployment/${d.name} `,
+            kind: 'deployment',
+            name: d.name,
+            namespace: d.namespace,
+            status: d.status,
+          });
+        }
+      }
+    }
+
+    // Pods
+    if (hasPodPrefix || (!hasDepPrefix && !hasSvcPrefix)) {
+      for (const p of this.resources.pods) {
+        if (!podSearch || p.name.toLowerCase().includes(podSearch)) {
+          options.push({
+            label: `@pod/${p.name}`,
+            insertValue: `@pod/${p.name} `,
+            kind: 'pod',
+            name: p.name,
+            namespace: p.namespace,
+            status: p.status,
+          });
+        }
+      }
+    }
+
+    // Services
+    if (hasSvcPrefix || (!hasDepPrefix && !hasPodPrefix)) {
+      for (const s of this.resources.services) {
+        if (!svcSearch || s.name.toLowerCase().includes(svcSearch)) {
+          options.push({
+            label: `@service/${s.name}`,
+            insertValue: `@service/${s.name} `,
+            kind: 'service',
+            name: s.name,
+            namespace: s.namespace,
+            status: s.status,
+          });
+        }
+      }
+    }
+
+    this.filteredMentionOptions = options.slice(0, 16);
+    this.selectedMentionIndex = 0;
+    this.showMentionPopup = this.filteredMentionOptions.length > 0;
+  }
+
+  selectMentionOption(option: MentionOption): void {
+    if (!this.chatInput_ || this.currentMentionStartIndex < 0) return;
+
+    const textarea = this.chatInput_.nativeElement;
+    const cursorPos = textarea.selectionStart || 0;
+
+    const prefix = this.inputText.slice(0, this.currentMentionStartIndex);
+    const suffix = this.inputText.slice(cursorPos);
+
+    this.inputText = prefix + option.insertValue + suffix;
+    const newCursorPos = (prefix + option.insertValue).length;
+
+    this.showMentionPopup = false;
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+      // If user selected a category e.g. @deployment/, re-open popup showing deployments!
+      if (option.kind === 'category') {
+        const kindPrefix = option.insertValue.replace('@', '').toLowerCase();
+        this.currentMentionStartIndex = this.inputText.lastIndexOf('@', newCursorPos);
+        this.filterMentionOptions(kindPrefix);
+      }
+    }, 0);
   }
 }

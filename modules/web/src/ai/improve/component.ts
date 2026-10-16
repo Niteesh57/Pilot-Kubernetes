@@ -41,9 +41,6 @@ export class AIImproveComponent implements OnInit, OnDestroy {
     this.selectedNamespace = this.getActiveNamespace();
     this.nsSub_ = this.namespaceService_.onNamespaceChangeEvent.subscribe(() => {
       this.selectedNamespace = this.getActiveNamespace();
-      if (this.response) {
-        this.runAudit();
-      }
     });
   }
 
@@ -63,7 +60,8 @@ export class AIImproveComponent implements OnInit, OnDestroy {
     this.isAuditing = true;
     this.error = null;
 
-    this.aiService.runImprovement(this.selectedNamespace || undefined).subscribe({
+    // Cluster Reliability Audit is always cluster-wide across all workloads
+    this.aiService.runImprovement().subscribe({
       next: res => {
         this.response = res;
         this.isAuditing = false;

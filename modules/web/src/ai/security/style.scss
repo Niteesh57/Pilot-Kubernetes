@@ -217,6 +217,14 @@
   }
 }
 
+.kd-attack-path {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-family: monospace;
+  font-size: 13px;
+  color: #ffb74d;
+}
+
 .kd-table-header {
   display: flex;
   align-items: center;

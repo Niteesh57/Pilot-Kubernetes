@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"crypto/elliptic"
 	"crypto/tls"
 	"net/http"
@@ -26,8 +27,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/klog/v2"
 
+	"k8s.io/dashboard/api/pkg/ai"
 	"k8s.io/dashboard/api/pkg/args"
 	"k8s.io/dashboard/api/pkg/environment"
+	"k8s.io/dashboard/api/pkg/graph"
 	"k8s.io/dashboard/api/pkg/handler"
 	"k8s.io/dashboard/api/pkg/integration"
 	integrationapi "k8s.io/dashboard/api/pkg/integration/api"
@@ -49,6 +52,7 @@ func main() {
 
 	if !args.IsProxyEnabled() {
 		ensureAPIServerConnectionOrDie()
+		startFalkorDBSyncer()
 	} else {
 		klog.Info("Running in proxy mode. InClusterClient connections will be disabled.")
 	}
@@ -90,6 +94,25 @@ func main() {
 	}
 
 	select {}
+}
+
+func startFalkorDBSyncer() {
+	k8sClient := client.InClusterClient()
+	if k8sClient == nil {
+		klog.Warning("FalkorDB syncer skipped: no in-cluster Kubernetes client")
+		return
+	}
+
+	settings := ai.LoadAISettings(k8sClient)
+	if settings.FalkorDBAddr == "" {
+		klog.Info("FalkorDB syncer skipped: FalkorDB address not configured")
+		return
+	}
+
+	manager := graph.NewManager(settings.FalkorDBAddr, settings.FalkorDBPassword, settings.FalkorDBGraphName, 60, k8sClient)
+	graph.SetManager(manager)
+	manager.Start(context.Background())
+	klog.InfoS("FalkorDB syncer started", "addr", settings.FalkorDBAddr, "graph", settings.FalkorDBGraphName)
 }
 
 func serve() {

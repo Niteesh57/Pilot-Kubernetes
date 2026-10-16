@@ -12,22 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {NgModule} from '@angular/core';
-import {RouterModule} from '@angular/router';
-import {SharedModule} from '../../shared.module';
-import {AIAnalystComponent} from './component';
+package ai
 
-@NgModule({
-  imports: [
-    SharedModule,
-    RouterModule.forChild([
-      {
-        path: '',
-        component: AIAnalystComponent,
-        data: {breadcrumb: 'AI Diagnostics Studio'},
-      },
-    ]),
-  ],
-  declarations: [AIAnalystComponent],
-})
-export class AIAnalystModule {}
+import "context"
+
+// GraphContextProvider supplies graph-grounded context for AI reasoning. The graph
+// package (or a handler adapter) implements this so the ai package stays decoupled.
+type GraphContextProvider interface {
+	ContextForResource(ctx context.Context, kind, name, namespace string) (string, error)
+	BlastRadiusSummary(ctx context.Context, kind, name, namespace string) (string, error)
+}

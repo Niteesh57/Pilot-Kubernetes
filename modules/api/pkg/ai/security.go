@@ -63,40 +63,94 @@ var sensitiveResources = map[string]bool{
 	"*":                          true,
 }
 
-// RunSecurityAudit audits the cluster for RBAC and workload security issues.
+// RunSecurityAudit audits the cluster or a specific namespace for RBAC and workload security issues.
 func RunSecurityAudit(ctx context.Context, k8sClient kubernetes.Interface, settings *AISettings, namespace string) (*SecurityResponse, error) {
 	findings := []SecurityFinding{}
+	isClusterScoped := (namespace == "" || namespace == "all" || namespace == "_all")
 
 	// ─── RBAC Audit ───────────────────────────────────────────────
-	clusterRoles, _ := k8sClient.RbacV1().ClusterRoles().List(ctx, metav1.ListOptions{})
-	if clusterRoles != nil {
-		for _, cr := range clusterRoles.Items {
-			rbacFindings := auditRBACRules(cr.Rules, "ClusterRole", cr.Name, "")
-			findings = append(findings, rbacFindings...)
+	if isClusterScoped {
+		// Cluster-wide: inspect all ClusterRoles, all Roles across all namespaces, and ClusterRoleBindings
+		clusterRoles, _ := k8sClient.RbacV1().ClusterRoles().List(ctx, metav1.ListOptions{})
+		if clusterRoles != nil {
+			for _, cr := range clusterRoles.Items {
+				rbacFindings := auditRBACRules(cr.Rules, "ClusterRole", cr.Name, "")
+				findings = append(findings, rbacFindings...)
+			}
 		}
-	}
 
-	roles, _ := k8sClient.RbacV1().Roles("").List(ctx, metav1.ListOptions{})
-	if roles != nil {
-		for _, r := range roles.Items {
-			rbacFindings := auditRBACRules(r.Rules, "Role", r.Name, r.Namespace)
-			findings = append(findings, rbacFindings...)
+		roles, _ := k8sClient.RbacV1().Roles("").List(ctx, metav1.ListOptions{})
+		if roles != nil {
+			for _, r := range roles.Items {
+				rbacFindings := auditRBACRules(r.Rules, "Role", r.Name, r.Namespace)
+				findings = append(findings, rbacFindings...)
+			}
 		}
-	}
 
-	// Check for default SA with cluster-admin
-	crbs, _ := k8sClient.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
-	if crbs != nil {
-		for _, crb := range crbs.Items {
-			if crb.RoleRef.Name == "cluster-admin" {
-				for _, subject := range crb.Subjects {
+		// Check for default SA with cluster-admin
+		crbs, _ := k8sClient.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
+		if crbs != nil {
+			for _, crb := range crbs.Items {
+				if crb.RoleRef.Name == "cluster-admin" {
+					for _, subject := range crb.Subjects {
+						if subject.Kind == "ServiceAccount" && subject.Name == "default" {
+							findings = append(findings, SecurityFinding{
+								Kind: "ClusterRoleBinding", Name: crb.Name, Namespace: subject.Namespace,
+								Category: "rbac", Severity: "critical",
+								Issue:   "Default ServiceAccount has cluster-admin access.",
+								Details: "The 'default' ServiceAccount should never have cluster-admin privileges. This grants any pod using the default SA unrestricted cluster access.",
+								YAMLPatch: fmt.Sprintf("kubectl delete clusterrolebinding %s", crb.Name),
+							})
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Namespace-scoped: strictly inspect Roles and RoleBindings in the target namespace only!
+		roles, _ := k8sClient.RbacV1().Roles(namespace).List(ctx, metav1.ListOptions{})
+		if roles != nil {
+			for _, r := range roles.Items {
+				rbacFindings := auditRBACRules(r.Rules, "Role", r.Name, r.Namespace)
+				findings = append(findings, rbacFindings...)
+			}
+		}
+
+		roleBindings, _ := k8sClient.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
+		if roleBindings != nil {
+			for _, rb := range roleBindings.Items {
+				// Check for cluster-admin bound in this namespace
+				if rb.RoleRef.Name == "cluster-admin" {
+					findings = append(findings, SecurityFinding{
+						Kind: "RoleBinding", Name: rb.Name, Namespace: namespace,
+						Category: "rbac", Severity: "high",
+						Issue:   fmt.Sprintf("RoleBinding '%s' grants cluster-admin role in namespace '%s'.", rb.Name, namespace),
+						Details: "Granting cluster-admin role via a RoleBinding provides full administrative control over all resources in this namespace. Use standard 'admin' or custom restricted roles instead.",
+						YAMLPatch: fmt.Sprintf("kubectl delete rolebinding %s -n %s", rb.Name, namespace),
+					})
+				}
+
+				// Check for default ServiceAccount bound to administrative roles
+				for _, subject := range rb.Subjects {
 					if subject.Kind == "ServiceAccount" && subject.Name == "default" {
+						if rb.RoleRef.Name == "cluster-admin" || rb.RoleRef.Name == "admin" || rb.RoleRef.Name == "edit" {
+							findings = append(findings, SecurityFinding{
+								Kind: "RoleBinding", Name: rb.Name, Namespace: namespace,
+								Category: "rbac", Severity: "high",
+								Issue:   fmt.Sprintf("Default ServiceAccount in namespace '%s' is bound to '%s' via RoleBinding '%s'.", namespace, rb.RoleRef.Name, rb.Name),
+								Details: "The 'default' ServiceAccount should not be granted administrative or edit roles. Dedicated service accounts should be created for workloads requiring API access.",
+								YAMLPatch: fmt.Sprintf("kubectl delete rolebinding %s -n %s", rb.Name, namespace),
+							})
+						}
+					}
+					// Check for bindings to unauthenticated / broad user groups
+					if subject.Kind == "Group" && (subject.Name == "system:unauthenticated" || subject.Name == "system:authenticated") {
 						findings = append(findings, SecurityFinding{
-							Kind: "ClusterRoleBinding", Name: crb.Name, Namespace: subject.Namespace,
+							Kind: "RoleBinding", Name: rb.Name, Namespace: namespace,
 							Category: "rbac", Severity: "critical",
-							Issue:   "Default ServiceAccount has cluster-admin access.",
-							Details: "The 'default' ServiceAccount should never have cluster-admin privileges. This grants any pod using the default SA unrestricted cluster access.",
-							YAMLPatch: fmt.Sprintf("kubectl delete clusterrolebinding %s", crb.Name),
+							Issue:   fmt.Sprintf("RoleBinding '%s' binds role '%s' to '%s'.", rb.Name, rb.RoleRef.Name, subject.Name),
+							Details: "Granting permissions to unauthenticated or broad authenticated user groups exposes namespace resources to unauthorized access.",
+							YAMLPatch: fmt.Sprintf("kubectl delete rolebinding %s -n %s", rb.Name, namespace),
 						})
 					}
 				}
@@ -105,15 +159,16 @@ func RunSecurityAudit(ctx context.Context, k8sClient kubernetes.Interface, setti
 	}
 
 	// ─── Workload Security Context Audit ──────────────────────────
-	namespaces := []string{namespace}
-	if namespace == "" || namespace == "all" {
+	var namespaces []string
+	if isClusterScoped {
 		nsList, _ := k8sClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 		if nsList != nil {
-			namespaces = []string{}
 			for _, ns := range nsList.Items {
 				namespaces = append(namespaces, ns.Name)
 			}
 		}
+	} else {
+		namespaces = []string{namespace}
 	}
 
 	for _, ns := range namespaces {
@@ -237,11 +292,16 @@ spec:
 		Findings: findings,
 	}
 
+	targetLabel := namespace
+	if isClusterScoped {
+		targetLabel = "Entire Cluster"
+	}
+
 	// Generate AI summary
 	if settings != nil && settings.APIKey != "" && len(findings) > 0 {
 		adapter, err := NewAdapter(settings)
 		if err == nil {
-			summaryText := buildSecuritySummary(score, findings)
+			summaryText := buildSecuritySummary(score, findings, targetLabel)
 			aiSummary, err := adapter.Chat(ctx, securitySystemPrompt, summaryText)
 			if err == nil {
 				result.AISummary = aiSummary
@@ -249,7 +309,86 @@ spec:
 		}
 	}
 
+	// Ensure AI Markdown assessment is always populated for immediate display
+	if result.AISummary == "" {
+		result.AISummary = generateFallbackSecurityMarkdown(score, findings, targetLabel)
+	}
+
 	return result, nil
+}
+
+func generateFallbackSecurityMarkdown(score int, findings []SecurityFinding, targetLabel string) string {
+	counts := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0}
+	var rbacIssues, workloadIssues, netIssues []SecurityFinding
+	for _, f := range findings {
+		counts[f.Severity]++
+		switch f.Category {
+		case "rbac":
+			rbacIssues = append(rbacIssues, f)
+		case "workload":
+			workloadIssues = append(workloadIssues, f)
+		case "network":
+			netIssues = append(netIssues, f)
+		}
+	}
+
+	riskLevel := "Low"
+	if counts["critical"] > 0 || score < 60 {
+		riskLevel = "Critical"
+	} else if counts["high"] > 0 || score < 80 {
+		riskLevel = "High"
+	} else if counts["medium"] > 0 || score < 95 {
+		riskLevel = "Medium"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("### Executive Risk Assessment (%s)\n", targetLabel))
+	sb.WriteString(fmt.Sprintf("**Security Posture Score**: **%d / 100** | **Risk Level**: **%s**\n\n", score, riskLevel))
+
+	if len(findings) == 0 {
+		sb.WriteString(fmt.Sprintf("Audit of **%s** found **0 security violations**. All inspected workloads and RBAC bindings adhere strictly to least-privilege standards.\n\n", targetLabel))
+		sb.WriteString("### Recommendations\n")
+		sb.WriteString("1. **Continuous Auditing**: Ensure CI/CD admission controllers validate image origins and drop root capabilities.\n")
+		sb.WriteString("2. **Pod Security Standards**: Enforce `pod-security.kubernetes.io/enforce=restricted` to prevent privilege escalations.\n")
+		return sb.String()
+	}
+
+	sb.WriteString(fmt.Sprintf("Audit detected **%d total security findings** (%d critical, %d high, %d medium, %d low).\n\n",
+		len(findings), counts["critical"], counts["high"], counts["medium"], counts["low"]))
+
+	sb.WriteString("### Priority Remediations\n")
+	priorityIdx := 1
+	if len(rbacIssues) > 0 {
+		sb.WriteString(fmt.Sprintf("%d. **RBAC Hardening**: Restrict %d overly-permissive role rules and privileged service account bindings.\n", priorityIdx, len(rbacIssues)))
+		priorityIdx++
+	}
+	if len(workloadIssues) > 0 {
+		sb.WriteString(fmt.Sprintf("%d. **Workload Isolation**: Enforce `securityContext` with `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, and drop host PID/network access on %d workloads.\n", priorityIdx, len(workloadIssues)))
+		priorityIdx++
+	}
+	if len(netIssues) > 0 {
+		sb.WriteString(fmt.Sprintf("%d. **Network Segmentation**: Deploy default-deny NetworkPolicies to isolate namespace traffic.\n", priorityIdx))
+		priorityIdx++
+	}
+
+	sb.WriteString("\n### Hardening Commands & Manifests\n")
+	sb.WriteString("```bash\n")
+	patchesShown := 0
+	for _, f := range findings {
+		if f.YAMLPatch != "" && strings.HasPrefix(f.YAMLPatch, "kubectl") {
+			sb.WriteString(fmt.Sprintf("%s\n", f.YAMLPatch))
+			patchesShown++
+			if patchesShown >= 4 {
+				break
+			}
+		}
+	}
+	if patchesShown == 0 {
+		sb.WriteString(fmt.Sprintf("# Inspect resources in %s\nkubectl get pods,roles,rolebindings -n %s -o wide\n", targetLabel, targetLabel))
+	}
+	sb.WriteString("```\n")
+
+	return sb.String()
 }
 
 func auditRBACRules(rules []rbacv1.PolicyRule, kind, name, namespace string) []SecurityFinding {
@@ -279,12 +418,13 @@ func auditRBACRules(rules []rbacv1.PolicyRule, kind, name, namespace string) []S
 	return findings
 }
 
-func buildSecuritySummary(score int, findings []SecurityFinding) string {
+func buildSecuritySummary(score int, findings []SecurityFinding, targetLabel string) string {
 	counts := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0}
 	for _, f := range findings {
 		counts[f.Severity]++
 	}
 	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Scope: %s\n", targetLabel))
 	sb.WriteString(fmt.Sprintf("Security Score: %d/100\n", score))
 	sb.WriteString(fmt.Sprintf("Critical: %d, High: %d, Medium: %d, Low: %d\n\n", counts["critical"], counts["high"], counts["medium"], counts["low"]))
 	sb.WriteString("Findings:\n")
@@ -293,7 +433,7 @@ func buildSecuritySummary(score int, findings []SecurityFinding) string {
 			sb.WriteString("... (truncated)\n")
 			break
 		}
-		sb.WriteString(fmt.Sprintf("- [%s] %s/%s: %s\n", f.Severity, f.Kind, f.Name, f.Issue))
+		sb.WriteString(fmt.Sprintf("- [%s] %s/%s in %s: %s\n", f.Severity, f.Kind, f.Name, f.Namespace, f.Issue))
 	}
 	return sb.String()
 }

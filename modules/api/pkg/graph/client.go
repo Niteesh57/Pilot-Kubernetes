@@ -19,10 +19,30 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/redis/go-redis/v9"
 	"k8s.io/klog/v2"
 )
+
+var (
+	defaultClientMu sync.RWMutex
+	defaultClient   *Client
+)
+
+// SetDefaultClient sets the process-wide FalkorDB client used by handlers.
+func SetDefaultClient(c *Client) {
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+	defaultClient = c
+}
+
+// DefaultClient returns the process-wide FalkorDB client, or nil when not configured.
+func DefaultClient() *Client {
+	defaultClientMu.RLock()
+	defer defaultClientMu.RUnlock()
+	return defaultClient
+}
 
 // Client wraps FalkorDB via the Redis protocol.
 type Client struct {
@@ -145,27 +165,6 @@ func (c *Client) DeleteNode(ctx context.Context, label, name, namespace string) 
 	}
 }
 
-// GetNeighbors returns a summary of neighbors (up to 2 hops) for the given resource.
-func (c *Client) GetNeighbors(ctx context.Context, label, name, namespace string, hops int) (interface{}, error) {
-	if hops <= 0 {
-		hops = 2
-	}
-	cypher := fmt.Sprintf(
-		"MATCH p=(n:%s {name: '%s', namespace: '%s'})-[*1..%d]-(neighbor) RETURN p",
-		label, escapeCypher(name), escapeCypher(namespace), hops,
-	)
-	return c.Query(ctx, cypher)
-}
-
-// BlastRadius computes what depends on the given resource (downstream dependents).
-func (c *Client) BlastRadius(ctx context.Context, label, name, namespace string) (interface{}, error) {
-	cypher := fmt.Sprintf(
-		"MATCH p=(n:%s {name: '%s', namespace: '%s'})<-[*1..4]-(dependent) RETURN dependent.name, labels(dependent), dependent.namespace",
-		label, escapeCypher(name), escapeCypher(namespace),
-	)
-	return c.Query(ctx, cypher)
-}
-
 // ClearGraph removes all nodes and edges from the graph (use carefully).
 func (c *Client) ClearGraph(ctx context.Context) error {
 	return c.RWQuery(ctx, "MATCH (n) DETACH DELETE n")
@@ -178,14 +177,9 @@ func escapeCypher(s string) string {
 
 // extractSingleInt attempts to pull a single integer from a FalkorDB result.
 func extractSingleInt(result interface{}) int {
-	if arr, ok := result.([]interface{}); ok && len(arr) >= 3 {
-		if rows, ok := arr[2].([]interface{}); ok && len(rows) > 0 {
-			if row, ok := rows[0].([]interface{}); ok && len(row) > 0 {
-				if val, ok := row[0].(int64); ok {
-					return int(val)
-				}
-			}
-		}
+	_, rows, err := parseRows(result)
+	if err != nil || len(rows) == 0 || len(rows[0]) == 0 {
+		return 0
 	}
-	return 0
+	return int(asInt64(rows[0][0]))
 }
