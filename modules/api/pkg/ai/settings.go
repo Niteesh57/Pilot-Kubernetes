@@ -60,11 +60,22 @@ func LoadAISettings(client kubernetes.Interface) *AISettings {
 			klog.ErrorS(err, "Failed to parse AI settings secret")
 		}
 	}
+	settings.APIKey = cleanAPIKey(settings.APIKey)
 	return settings
+}
+
+// cleanAPIKey strips any env variable prefix (e.g. NVIDIA_API_KEY= or GROQ_API_KEY=) and quotes.
+func cleanAPIKey(key string) string {
+	key = strings.TrimSpace(key)
+	if idx := strings.Index(key, "="); idx != -1 {
+		key = strings.TrimSpace(key[idx+1:])
+	}
+	return strings.Trim(key, `"' `)
 }
 
 // SaveAISettings persists AI settings to the cluster Secret.
 func SaveAISettings(client kubernetes.Interface, settings *AISettings) error {
+	settings.APIKey = cleanAPIKey(settings.APIKey)
 	data, err := json.Marshal(settings)
 	if err != nil {
 		return err

@@ -19,6 +19,7 @@ import {UntrimPipe} from '@common/pipes/untrim';
 
 import {CommaSeparatedPipe} from './commaseparated';
 import {CoreFormatter} from './coreformatter';
+import {MarkdownPipe} from './markdown';
 import {MemoryFormatter} from './memoryformatter';
 import {RelativeTimeFormatter} from './relativetime';
 import {StripAnsiPipe} from './stripansi';
@@ -34,6 +35,7 @@ import {TrimPipe} from './trim';
     CommaSeparatedPipe,
     FilterByPipe,
     UntrimPipe,
+    MarkdownPipe,
   ],
   providers: [DecimalPipe],
   exports: [
@@ -45,6 +47,7 @@ import {TrimPipe} from './trim';
     CommaSeparatedPipe,
     FilterByPipe,
     UntrimPipe,
+    MarkdownPipe,
   ],
 })
 export class PipesModule {}

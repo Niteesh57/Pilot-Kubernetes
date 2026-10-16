@@ -18,7 +18,16 @@ import {SharedModule} from '../../shared.module';
 import {TrafficTopologyComponent} from './component';
 
 @NgModule({
-  imports: [SharedModule, RouterModule.forChild([{path: '', component: TrafficTopologyComponent}])],
+  imports: [
+    SharedModule,
+    RouterModule.forChild([
+      {
+        path: '',
+        component: TrafficTopologyComponent,
+        data: {breadcrumb: 'Service Traffic & Topology'},
+      },
+    ]),
+  ],
   declarations: [TrafficTopologyComponent],
 })
 export class TrafficTopologyModule {}

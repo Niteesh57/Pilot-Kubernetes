@@ -18,7 +18,16 @@ import {SharedModule} from '../../shared.module';
 import {AIAgentComponent} from './component';
 
 @NgModule({
-  imports: [SharedModule, RouterModule.forChild([{path: '', component: AIAgentComponent}])],
+  imports: [
+    SharedModule,
+    RouterModule.forChild([
+      {
+        path: '',
+        component: AIAgentComponent,
+        data: {breadcrumb: 'AI SRE Problem Solver'},
+      },
+    ]),
+  ],
   declarations: [AIAgentComponent],
 })
 export class AIAgentModule {}

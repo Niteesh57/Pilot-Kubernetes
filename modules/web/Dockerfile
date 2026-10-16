@@ -55,9 +55,9 @@ RUN make build-frontend
 
 FROM golang:1.24-alpine3.22 AS go-builder
 
-ARG TARGETARCH
-ARG TARGETOS
-ARG VERSION
+ARG TARGETARCH=amd64
+ARG TARGETOS=linux
+ARG VERSION=latest
 
 WORKDIR /workspace
 
@@ -74,10 +74,10 @@ WORKDIR /workspace/web
 # This allows the container build to reuse cached dependencies.
 # Expecting to copy go.mod and if present go.sum.
 COPY /modules/web/go.* ./
-RUN go mod download
-
 COPY /modules/web/pkg ./pkg
 COPY /modules/web/main.go ./
+RUN go mod tidy
+RUN go mod download
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X k8s.io/dashboard/web/pkg/environment.Version=${VERSION}" -o dashboard-web .
 

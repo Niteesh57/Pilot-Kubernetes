@@ -18,7 +18,16 @@ import {SharedModule} from '../../shared.module';
 import {AIImproveComponent} from './component';
 
 @NgModule({
-  imports: [SharedModule, RouterModule.forChild([{path: '', component: AIImproveComponent}])],
+  imports: [
+    SharedModule,
+    RouterModule.forChild([
+      {
+        path: '',
+        component: AIImproveComponent,
+        data: {breadcrumb: 'Cluster Reliability Auditor'},
+      },
+    ]),
+  ],
   declarations: [AIImproveComponent],
 })
 export class AIImproveModule {}

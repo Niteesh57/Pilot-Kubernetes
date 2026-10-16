@@ -1,0 +1,3 @@
+- Prefers FalkorDB (graph database) for building insight-driven, modern features in AI agent solutions. Confidence: 0.6
+- Prefers forking and modernizing an existing UI rather than building one from scratch. Confidence: 0.6
+- Uses Kubernetes for running/deploying AI agent solutions. Confidence: 0.5

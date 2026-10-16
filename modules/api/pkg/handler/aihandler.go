@@ -24,6 +24,7 @@ import (
 	"k8s.io/dashboard/api/pkg/traffic"
 	"k8s.io/dashboard/client"
 	"k8s.io/dashboard/errors"
+	kubernetes "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
 
@@ -64,6 +65,10 @@ func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
 		Doc("Audits a specific namespace for reliability and resource issues").
 		Param(ws.PathParameter("namespace", "namespace to audit")).
 		Returns(http.StatusOK, "OK", ai.ImprovementResponse{}))
+	ws.Route(ws.POST("/ai/improvement/{namespace}").To(apiHandler.handleImprovement).
+		Doc("Audits a specific namespace for reliability and resource issues").
+		Param(ws.PathParameter("namespace", "namespace to audit")).
+		Returns(http.StatusOK, "OK", ai.ImprovementResponse{}))
 
 	// ─── AI Security ──────────────────────────────────────────────
 	ws.Route(ws.POST("/ai/security").To(apiHandler.handleSecurity).
@@ -71,6 +76,10 @@ func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
 		Returns(http.StatusOK, "OK", ai.SecurityResponse{}))
 
 	ws.Route(ws.GET("/ai/security/{namespace}").To(apiHandler.handleSecurity).
+		Doc("Runs security audit for a specific namespace").
+		Param(ws.PathParameter("namespace", "namespace to audit")).
+		Returns(http.StatusOK, "OK", ai.SecurityResponse{}))
+	ws.Route(ws.POST("/ai/security/{namespace}").To(apiHandler.handleSecurity).
 		Doc("Runs security audit for a specific namespace").
 		Param(ws.PathParameter("namespace", "namespace to audit")).
 		Returns(http.StatusOK, "OK", ai.SecurityResponse{}))
@@ -108,10 +117,26 @@ func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
 		Returns(http.StatusOK, "OK", traffic.TopologyGraph{}))
 }
 
+// getK8sClient returns a Kubernetes client for the request. If an authorization token is present,
+// it uses the cached/user client; otherwise it falls back to the in-cluster service account client.
+func getK8sClient(req *http.Request) (kubernetes.Interface, error) {
+	token := client.GetBearerToken(req)
+	if token != "" {
+		c, err := client.Client(req)
+		if err == nil && c != nil {
+			return c, nil
+		}
+	}
+	if inc := client.InClusterClient(); inc != nil {
+		return inc, nil
+	}
+	return client.Client(req)
+}
+
 // ─── AI Settings Handlers ─────────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleGetAISettings(request *restful.Request, response *restful.Response) {
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -121,7 +146,7 @@ func (apiHandler *APIHandler) handleGetAISettings(request *restful.Request, resp
 }
 
 func (apiHandler *APIHandler) handleSaveAISettings(request *restful.Request, response *restful.Response) {
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -165,7 +190,7 @@ func (apiHandler *APIHandler) handleVerifyAI(request *restful.Request, response 
 // ─── AI Analyst Handler ───────────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleAnalyst(request *restful.Request, response *restful.Response) {
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -189,7 +214,7 @@ func (apiHandler *APIHandler) handleAnalyst(request *restful.Request, response *
 // ─── AI Improvement Handler ───────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleImprovement(request *restful.Request, response *restful.Response) {
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -209,7 +234,7 @@ func (apiHandler *APIHandler) handleImprovement(request *restful.Request, respon
 // ─── AI Security Handler ──────────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleSecurity(request *restful.Request, response *restful.Response) {
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -229,7 +254,7 @@ func (apiHandler *APIHandler) handleSecurity(request *restful.Request, response 
 // ─── SRE Agent Handler ────────────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleAgent(request *restful.Request, response *restful.Response) {
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -310,7 +335,7 @@ func (apiHandler *APIHandler) handleBlastRadius(request *restful.Request, respon
 // ─── Traffic Handler ──────────────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleTraffic(request *restful.Request, response *restful.Response) {
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
@@ -331,7 +356,7 @@ func getGraphClient(request *restful.Request) *graph.Client {
 	if graphClient != nil {
 		return graphClient
 	}
-	k8sClient, err := client.Client(request.Request)
+	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
 		return nil
 	}

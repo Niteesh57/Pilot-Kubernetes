@@ -126,7 +126,9 @@ export interface TopologyNode {
   namespace: string;
   kind: string;
   status: string;
+  group?: string;
   labels?: {[key: string]: string};
+  properties?: {[key: string]: string};
 }
 
 export interface TopologyEdge {
@@ -141,6 +143,7 @@ export interface TopologyEdge {
 export interface TopologyGraph {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
+  groups?: string[];
   timestamp: number;
 }
 

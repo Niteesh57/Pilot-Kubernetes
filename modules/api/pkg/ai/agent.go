@@ -64,25 +64,41 @@ func RunAgentQuery(ctx context.Context, k8sClient kubernetes.Interface, settings
 
 	// Step 4: AI synthesis
 	step4 := AgentStep{Step: "4", Description: "Synthesizing findings with AI"}
-	adapter, err := NewAdapter(settings)
-	if err != nil {
-		return nil, fmt.Errorf("AI adapter not configured: %w", err)
-	}
-
-	fullPrompt := fmt.Sprintf("Engineer's Question: %s\n\nCluster Context:\n%s", req.Query, contextData.String())
-	rawResponse, err := adapter.Chat(ctx, agentSystemPrompt, fullPrompt)
-	if err != nil {
-		return nil, fmt.Errorf("AI synthesis failed: %w", err)
-	}
-	step4.Output = "AI analysis complete"
-	steps = append(steps, step4)
-
-	// Parse AI response
 	response := &AgentResponse{
 		Query:        req.Query,
 		Steps:        steps,
 		GraphContext: "",
 	}
+
+	adapter, err := NewAdapter(settings)
+	if err != nil {
+		step4.Output = fmt.Sprintf("AI provider not configured (%v). Presenting live cluster diagnostics.", err)
+		steps = append(steps, step4)
+		response.Summary = fmt.Sprintf("Cluster diagnostics gathered for '%s' in namespace '%s'. Configure an AI Provider in AI Settings for automated synthesis.", req.Query, namespace)
+		response.Commands = []string{
+			fmt.Sprintf("kubectl get pods -n %s", namespace),
+			fmt.Sprintf("kubectl get events -n %s --sort-by='.metadata.creationTimestamp'", namespace),
+		}
+		response.Steps = steps
+		return response, nil
+	}
+
+	fullPrompt := fmt.Sprintf("Engineer's Question: %s\n\nCluster Context:\n%s", req.Query, contextData.String())
+	rawResponse, err := adapter.Chat(ctx, agentSystemPrompt, fullPrompt)
+	if err != nil {
+		step4.Output = fmt.Sprintf("AI synthesis note: %v. Live diagnostics gathered above.", err)
+		steps = append(steps, step4)
+		response.Summary = fmt.Sprintf("Gathered live diagnostic state for '%s' in namespace '%s'. Note: The configured AI Provider returned: %v. Please verify your API Key and Model in AI Settings.", req.Query, namespace, err)
+		response.Commands = []string{
+			fmt.Sprintf("kubectl get pods -n %s", namespace),
+			fmt.Sprintf("kubectl get events -n %s --sort-by='.metadata.creationTimestamp'", namespace),
+		}
+		response.Steps = steps
+		return response, nil
+	}
+	step4.Output = "AI analysis complete"
+	steps = append(steps, step4)
+	response.Steps = steps
 
 	cleaned := strings.TrimSpace(rawResponse)
 	cleaned = strings.TrimPrefix(cleaned, "```json")

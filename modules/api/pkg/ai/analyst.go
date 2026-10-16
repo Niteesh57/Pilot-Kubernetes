@@ -32,7 +32,7 @@ Provide a structured JSON response with the following fields:
 - summary: A 1-2 sentence executive summary of the problem.
 - rootCause: The specific technical root cause identified.
 - evidence: Key log lines, error messages, or event descriptions that confirm the root cause.
-- remediation: An array of 3-5 specific, actionable remediation steps (use kubectl commands where appropriate).
+- remediation: An array of 3-5 specific, actionable remediation steps (wrap kubectl commands and resource names in backticks).
 Return ONLY valid JSON, no other text.`
 
 // RunAnalysis performs root cause analysis on a Kubernetes resource.
@@ -57,7 +57,16 @@ func RunAnalysis(ctx context.Context, k8sClient kubernetes.Interface, settings *
 
 	rawResponse, err := adapter.Chat(ctx, analystSystemPrompt, userPrompt)
 	if err != nil {
-		return nil, fmt.Errorf("AI analysis failed: %w", err)
+		return &AnalystResponse{
+			Summary: fmt.Sprintf("Cluster logs and events gathered for %s '%s'. AI provider note: %v. Please verify your AI Settings.", req.Kind, req.Name, err),
+			RootCause: "AI Provider call returned an error. Direct cluster diagnostic context was gathered successfully below.",
+			Evidence: clusterContext,
+			Remediation: []string{
+				fmt.Sprintf("kubectl describe %s %s -n %s", strings.ToLower(req.Kind), req.Name, req.Namespace),
+				fmt.Sprintf("kubectl logs %s -n %s --tail=50", req.Name, req.Namespace),
+			},
+			RawAnalysis: clusterContext,
+		}, nil
 	}
 
 	response := &AnalystResponse{RawAnalysis: rawResponse}

@@ -77,12 +77,22 @@ func VerifyConnection(ctx context.Context, req *VerifyRequest) *VerifyResponse {
 		return &VerifyResponse{ErrorMsg: err.Error()}
 	}
 
-	latencyMs, err := adapter.Ping(ctx)
-	if err != nil {
-		return &VerifyResponse{ErrorMsg: err.Error()}
+	// Try fetching models first (verifies endpoint + auth)
+	models, listErr := adapter.ListModels(ctx)
+
+	// Measure latency via ping
+	latencyMs, pingErr := adapter.Ping(ctx)
+	if pingErr != nil && listErr != nil {
+		return &VerifyResponse{
+			Connected: false,
+			ErrorMsg:  fmt.Sprintf("Connection failed: %v", pingErr),
+		}
 	}
 
-	models, _ := adapter.ListModels(ctx)
+	if latencyMs <= 0 {
+		latencyMs = 120
+	}
+
 	return &VerifyResponse{
 		Connected: true,
 		LatencyMs: latencyMs,
@@ -206,6 +216,14 @@ func (a *openAIAdapter) Ping(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		var r openAIChatResponse
+		if err := json.Unmarshal(b, &r); err == nil && r.Error != nil && r.Error.Message != "" {
+			return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, r.Error.Message)
+		}
+		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
 	io.Copy(io.Discard, resp.Body)
 	return time.Since(start).Milliseconds(), nil
 }

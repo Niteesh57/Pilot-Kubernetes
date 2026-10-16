@@ -171,22 +171,37 @@ const routes: Routes = [
       {
         path: 'ai/agent',
         loadChildren: () => import('ai/agent/module').then(m => m.AIAgentModule),
+        data: {
+          breadcrumb: 'AI SRE Problem Solver',
+        },
       },
       {
         path: 'ai/analyst',
         loadChildren: () => import('ai/analyst/module').then(m => m.AIAnalystModule),
+        data: {
+          breadcrumb: 'AI Diagnostics Studio',
+        },
       },
       {
         path: 'ai/security',
         loadChildren: () => import('ai/security/module').then(m => m.AISecurityModule),
+        data: {
+          breadcrumb: 'AI Security & RBAC',
+        },
       },
       {
         path: 'ai/improve',
         loadChildren: () => import('ai/improve/module').then(m => m.AIImproveModule),
+        data: {
+          breadcrumb: 'Cluster Reliability Auditor',
+        },
       },
       {
         path: 'ai/traffic',
         loadChildren: () => import('ai/traffic/module').then(m => m.TrafficTopologyModule),
+        data: {
+          breadcrumb: 'Service Traffic & Topology',
+        },
       },
 
       // Others

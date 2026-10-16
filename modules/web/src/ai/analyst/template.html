@@ -45,7 +45,19 @@ limitations under the License.
 
           <mat-form-field appearance="outline" class="kd-full-width">
             <mat-label>Resource Name</mat-label>
-            <input matInput formControlName="name" id="analyst-name" placeholder="my-pod-abc123" />
+            <input
+              matInput
+              formControlName="name"
+              id="analyst-name"
+              placeholder="Select or enter resource name"
+              [matAutocomplete]="auto"
+            />
+            <mat-spinner *ngIf="isLoadingResources" matSuffix diameter="18"></mat-spinner>
+            <mat-autocomplete #auto="matAutocomplete">
+              <mat-option *ngFor="let r of discoveredResources" [value]="r">
+                {{ r }}
+              </mat-option>
+            </mat-autocomplete>
           </mat-form-field>
 
           <mat-form-field appearance="outline" class="kd-full-width">
@@ -101,7 +113,9 @@ limitations under the License.
             <mat-icon class="kd-result-icon">summarize</mat-icon>
             <mat-card-title>Summary</mat-card-title>
           </mat-card-header>
-          <mat-card-content>{{ result.summary }}</mat-card-content>
+          <mat-card-content>
+            <div class="kd-markdown" [innerHTML]="result.summary | kdMarkdown"></div>
+          </mat-card-content>
         </mat-card>
 
         <!-- Root Cause -->
@@ -110,7 +124,9 @@ limitations under the License.
             <mat-icon class="kd-result-icon kd-icon-warn">warning</mat-icon>
             <mat-card-title>Root Cause</mat-card-title>
           </mat-card-header>
-          <mat-card-content>{{ result.rootCause }}</mat-card-content>
+          <mat-card-content>
+            <div class="kd-markdown" [innerHTML]="result.rootCause | kdMarkdown"></div>
+          </mat-card-content>
         </mat-card>
 
         <!-- Evidence -->
@@ -132,7 +148,9 @@ limitations under the License.
           </mat-card-header>
           <mat-card-content>
             <ol class="kd-remediation-list">
-              <li *ngFor="let step of result.remediation">{{ step }}</li>
+              <li *ngFor="let step of result.remediation">
+                <span class="kd-markdown" [innerHTML]="step | kdMarkdown"></span>
+              </li>
             </ol>
           </mat-card-content>
         </mat-card>

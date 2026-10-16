@@ -25,9 +25,21 @@ import (
 )
 
 const improvementSystemPrompt = `You are a senior Kubernetes reliability and platform engineer.
-Analyze the provided cluster audit data and generate a comprehensive improvement summary.
-Focus on reliability, resource efficiency, and operational best practices.
-Return a 2-3 paragraph executive summary in plain text (no JSON).`
+Analyze the provided cluster audit data and generate a comprehensive improvement summary formatted in clean, rich Markdown.
+Structure your response as follows:
+
+### Reliability & Hygiene Assessment
+State the overall cluster reliability health, resource efficiency state, and single-point-of-failure exposure.
+
+### Key Optimization Priorities
+1. **Resource Limits & Requests**: Priority adjustments for containers with missing CPU/memory constraints.
+2. **Health Probes**: Pods requiring liveness and readiness probe enforcement.
+3. **High Availability & Anti-Affinity**: Workloads at risk of eviction or single node failure.
+
+### Actionable Remediation Commands
+Provide exact kubectl commands and YAML snippets in fenced code blocks.
+
+Do not return a single block of unformatted text. Always use Markdown headings, lists, and code blocks.`
 
 // RunImprovementAudit audits the cluster for reliability and resource issues.
 func RunImprovementAudit(ctx context.Context, k8sClient kubernetes.Interface, settings *AISettings, namespace string) (*ImprovementResponse, error) {

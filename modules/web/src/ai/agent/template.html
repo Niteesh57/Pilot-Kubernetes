@@ -60,7 +60,7 @@ limitations under the License.
         <!-- Sample prompts -->
         <div class="kd-sample-prompts">
           <span class="kd-sample-label">Quick Prompts:</span>
-          <mat-chip-set>
+          <mat-chip-list>
             <mat-chip
               *ngFor="let sample of samplePrompts"
               (click)="useSample(sample)"
@@ -68,7 +68,7 @@ limitations under the License.
             >
               {{ sample }}
             </mat-chip>
-          </mat-chip-set>
+          </mat-chip-list>
         </div>
       </form>
     </mat-card-content>
@@ -95,7 +95,7 @@ limitations under the License.
             <div class="kd-step-badge">{{ idx + 1 }}</div>
             <div class="kd-step-body">
               <div class="kd-step-title">{{ s.step }}</div>
-              <div class="kd-step-desc">{{ s.description }}</div>
+              <div class="kd-step-desc kd-markdown" [innerHTML]="s.description | kdMarkdown"></div>
               <pre *ngIf="s.output" class="kd-step-output">{{ s.output }}</pre>
             </div>
           </div>
@@ -112,14 +112,14 @@ limitations under the License.
       <mat-card-content>
         <div class="kd-summary-section">
           <h4>Executive Summary</h4>
-          <p class="kd-summary-content">{{ response.summary }}</p>
+          <div class="kd-summary-content kd-markdown" [innerHTML]="response.summary | kdMarkdown"></div>
         </div>
 
         <div *ngIf="response.rootCause" class="kd-rootcause-section">
           <h4>Identified Root Cause</h4>
           <div class="kd-rootcause-box">
             <mat-icon color="warn">warning</mat-icon>
-            <span>{{ response.rootCause }}</span>
+            <div class="kd-markdown" [innerHTML]="response.rootCause | kdMarkdown"></div>
           </div>
         </div>
 

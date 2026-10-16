@@ -29,21 +29,16 @@ limitations under the License.
       </div>
 
       <div class="kd-action-box">
-        <mat-form-field appearance="outline" class="kd-ns-input">
-          <mat-label>Namespace</mat-label>
-          <input
-            matInput
-            [(ngModel)]="selectedNamespace"
-            placeholder="All namespaces"
-            (keydown.enter)="runScan()"
-          />
-        </mat-form-field>
+        <div class="kd-scope-badge">
+          <mat-icon>layers</mat-icon>
+          <span>Scope: <strong>{{ selectedNamespace ? selectedNamespace : 'All Namespaces' }}</strong></span>
+        </div>
 
         <button mat-raised-button color="primary" (click)="runScan()" [disabled]="isScanning">
-          <mat-icon *ngIf="!isScanning">refresh</mat-icon>
+          <mat-icon *ngIf="!isScanning">security</mat-icon>
           <mat-spinner *ngIf="isScanning" diameter="20" color="accent"></mat-spinner>
-          <span *ngIf="!isScanning">Scan Cluster</span>
-          <span *ngIf="isScanning">Scanning...</span>
+          <span *ngIf="!isScanning">{{ response ? 'Re-scan Security' : 'Start Security Audit' }}</span>
+          <span *ngIf="isScanning">Analyzing Cluster...</span>
         </button>
       </div>
     </div>
@@ -53,6 +48,22 @@ limitations under the License.
   <mat-card *ngIf="error" class="kd-error-card">
     <mat-icon color="warn">error_outline</mat-icon>
     <div>{{ error }}</div>
+  </mat-card>
+
+  <!-- Ready to Scan Initial State -->
+  <mat-card *ngIf="!response && !isScanning && !error" class="kd-security-card kd-ready-card">
+    <div class="kd-ready-content">
+      <mat-icon class="kd-ready-icon" color="primary">policy</mat-icon>
+      <h3>Ready to Audit Security Posture</h3>
+      <p>
+        Click <strong>Start Security Audit</strong> to evaluate RBAC privilege escalations, wildcard cluster roles,
+        privileged container flags, and host mount vulnerabilities for 
+        <strong>{{ selectedNamespace ? 'namespace ' + selectedNamespace : 'all namespaces in the cluster' }}</strong>.
+      </p>
+      <button mat-raised-button color="primary" (click)="runScan()">
+        <mat-icon>play_arrow</mat-icon> Start Security Audit
+      </button>
+    </div>
   </mat-card>
 
   <!-- Scorecard Banner -->
@@ -99,7 +110,7 @@ limitations under the License.
       <mat-card-title>AI Security Analysis &amp; Attack Surface Evaluation</mat-card-title>
     </mat-card-header>
     <mat-card-content>
-      <p class="kd-summary-text">{{ response.aiSummary }}</p>
+      <div class="kd-markdown kd-summary-text" [innerHTML]="response.aiSummary | kdMarkdown"></div>
     </mat-card-content>
   </mat-card>
 
@@ -180,8 +191,8 @@ limitations under the License.
         </div>
 
         <div class="kd-finding-body">
-          <div class="kd-finding-issue">{{ item.issue }}</div>
-          <div *ngIf="item.details" class="kd-finding-details">{{ item.details }}</div>
+          <div class="kd-finding-issue kd-markdown" [innerHTML]="item.issue | kdMarkdown"></div>
+          <div *ngIf="item.details" class="kd-finding-details kd-markdown" [innerHTML]="item.details | kdMarkdown"></div>
 
           <div *ngIf="item.yamlPatch" class="kd-patch-container">
             <div class="kd-patch-label">Hardened Manifest Recommendation:</div>

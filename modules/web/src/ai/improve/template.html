@@ -29,20 +29,15 @@ limitations under the License.
       </div>
 
       <div class="kd-action-box">
-        <mat-form-field appearance="outline" class="kd-ns-input">
-          <mat-label>Namespace</mat-label>
-          <input
-            matInput
-            [(ngModel)]="selectedNamespace"
-            placeholder="All namespaces"
-            (keydown.enter)="runAudit()"
-          />
-        </mat-form-field>
+        <div class="kd-scope-badge">
+          <mat-icon>layers</mat-icon>
+          <span>Scope: <strong>{{ selectedNamespace ? selectedNamespace : 'All Namespaces' }}</strong></span>
+        </div>
 
         <button mat-raised-button color="primary" (click)="runAudit()" [disabled]="isAuditing">
           <mat-icon *ngIf="!isAuditing">auto_fix_high</mat-icon>
           <mat-spinner *ngIf="isAuditing" diameter="20" color="accent"></mat-spinner>
-          <span *ngIf="!isAuditing">Audit Cluster</span>
+          <span *ngIf="!isAuditing">{{ response ? 'Re-audit Cluster' : 'Run Reliability Audit' }}</span>
           <span *ngIf="isAuditing">Auditing...</span>
         </button>
       </div>
@@ -55,71 +50,93 @@ limitations under the License.
     <div>{{ error }}</div>
   </mat-card>
 
+  <!-- Ready to Audit Initial State -->
+  <mat-card *ngIf="!response && !isAuditing && !error" class="kd-improve-card kd-ready-card">
+    <div class="kd-ready-content">
+      <mat-icon class="kd-ready-icon" color="primary">health_and_safety</mat-icon>
+      <h3>Ready to Audit Reliability &amp; Hygiene</h3>
+      <p>
+        Click <strong>Run Reliability Audit</strong> to evaluate CPU/memory resource limits, liveness and readiness probes,
+        single-replica single point of failures, and eviction vulnerabilities for 
+        <strong>{{ selectedNamespace ? 'namespace ' + selectedNamespace : 'all namespaces in the cluster' }}</strong>.
+      </p>
+      <button mat-raised-button color="primary" (click)="runAudit()">
+        <mat-icon>play_arrow</mat-icon> Run Reliability Audit
+      </button>
+    </div>
+  </mat-card>
+
   <!-- AI Summary -->
   <mat-card *ngIf="response?.aiSummary" class="kd-improve-card kd-summary-card">
     <mat-card-header>
       <mat-icon mat-card-avatar color="primary">insights</mat-icon>
-      <mat-card-title>Cluster Reliability Analysis</mat-card-title>
+      <mat-card-title>AI Reliability &amp; Optimization Assessment</mat-card-title>
     </mat-card-header>
     <mat-card-content>
-      <p class="kd-summary-text">{{ response.aiSummary }}</p>
+      <div class="kd-markdown kd-summary-text" [innerHTML]="response.aiSummary | kdMarkdown"></div>
     </mat-card-content>
   </mat-card>
 
-  <!-- Findings -->
+  <!-- Findings Table Card -->
   <mat-card *ngIf="response" class="kd-improve-card">
     <div class="kd-table-header">
       <div class="kd-table-title">
-        <h3>Reliability &amp; Hygiene Opportunities</h3>
-        <span class="kd-count-badge">{{ filteredFindings.length }} items ({{ response.totalScanned }} workloads scanned)</span>
+        <h3>Detected Reliability &amp; Efficiency Gaps</h3>
+        <span class="kd-count-badge">{{ filteredFindings.length }} items</span>
       </div>
 
+      <!-- Filter Buttons -->
       <div class="kd-filter-buttons">
         <button
           mat-stroked-button
           [class.active]="categoryFilter === 'ALL'"
           (click)="categoryFilter = 'ALL'"
         >
-          All
+          All ({{ response.findings.length }})
         </button>
         <button
           mat-stroked-button
-          [class.active]="categoryFilter === 'Reliability'"
-          (click)="categoryFilter = 'Reliability'"
-        >
-          Reliability &amp; Probes
-        </button>
-        <button
-          mat-stroked-button
-          [class.active]="categoryFilter === 'Resource Optimization'"
-          (click)="categoryFilter = 'Resource Optimization'"
+          [class.active]="categoryFilter === 'limits'"
+          (click)="categoryFilter = 'limits'"
         >
           Resource Limits
         </button>
         <button
           mat-stroked-button
-          [class.active]="categoryFilter === 'High Availability'"
-          (click)="categoryFilter = 'High Availability'"
+          [class.active]="categoryFilter === 'probes'"
+          (click)="categoryFilter = 'probes'"
         >
-          High Availability
+          Health Probes
+        </button>
+        <button
+          mat-stroked-button
+          [class.active]="categoryFilter === 'resilience'"
+          (click)="categoryFilter = 'resilience'"
+        >
+          HA Resilience
         </button>
       </div>
     </div>
 
     <div *ngIf="filteredFindings.length === 0" class="kd-empty-state">
-      <mat-icon>task_alt</mat-icon>
-      <p>All scanned workloads satisfy reliability and hygiene best practices</p>
+      <mat-icon>check_circle</mat-icon>
+      <p>No hygiene gaps found for the selected category</p>
     </div>
 
-    <!-- Finding Items -->
+    <!-- Findings List -->
     <div class="kd-findings-list">
-      <div class="kd-finding-row" *ngFor="let item of filteredFindings">
+      <div
+        class="kd-finding-row"
+        *ngFor="let item of filteredFindings"
+        [class]="'severity-' + item.severity.toLowerCase()"
+      >
         <div class="kd-finding-header">
           <div class="kd-finding-meta">
-            <span class="kd-category-badge">{{ item.category }}</span>
+            <span class="kd-severity-tag" [class]="item.severity.toLowerCase()">{{ item.severity }}</span>
             <span class="kd-res-type">{{ item.kind }}</span>
             <span class="kd-res-name">{{ item.name }}</span>
-            <span class="kd-res-ns">{{ item.namespace }}</span>
+            <span *ngIf="item.namespace" class="kd-res-ns">{{ item.namespace }}</span>
+            <span class="kd-category-tag">{{ item.category }}</span>
           </div>
 
           <button
@@ -127,17 +144,17 @@ limitations under the License.
             mat-stroked-button
             color="primary"
             (click)="copyPatch(item.yamlPatch)"
-            class="kd-copy-btn"
+            class="kd-fix-btn"
           >
-            <mat-icon>content_copy</mat-icon> Copy Optimized YAML
+            <mat-icon>content_copy</mat-icon> Copy Remediation Patch
           </button>
         </div>
 
         <div class="kd-finding-body">
-          <div class="kd-finding-issue">{{ item.issue }}</div>
+          <div class="kd-finding-issue kd-markdown" [innerHTML]="item.issue | kdMarkdown"></div>
 
           <div *ngIf="item.yamlPatch" class="kd-patch-container">
-            <div class="kd-patch-label">Suggested Manifest Patch:</div>
+            <div class="kd-patch-label">Suggested Patch / Manifest:</div>
             <pre class="kd-yaml-box">{{ item.yamlPatch }}</pre>
           </div>
         </div>

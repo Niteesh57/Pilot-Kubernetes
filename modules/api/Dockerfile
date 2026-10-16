@@ -17,8 +17,9 @@ FROM alpine:3.21 AS user
 ENV USER=nonroot
 ENV UID=10001
 
-# Create nonroot user.
-RUN adduser \
+# Create nonroot user and install CA certificates.
+RUN apk add --no-cache ca-certificates && \
+    adduser \
     --disabled-password \
     --gecos "" \
     --home "/nonexistent" \
@@ -29,9 +30,9 @@ RUN adduser \
 
 FROM golang:1.24-alpine3.22 AS builder
 
-ARG TARGETARCH
-ARG TARGETOS
-ARG VERSION
+ARG TARGETARCH=amd64
+ARG TARGETOS=linux
+ARG VERSION=latest
 
 WORKDIR /workspace
 
@@ -49,10 +50,10 @@ WORKDIR /workspace/api
 # This allows the container build to reuse cached dependencies.
 # Expecting to copy go.mod and if present go.sum.
 COPY api/go.* ./
-RUN go mod download
-
 COPY api/pkg ./pkg
 COPY api/main.go ./
+RUN go mod tidy
+RUN go mod download
 
 RUN echo ${VERSION}
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X k8s.io/dashboard/api/pkg/environment.Version=${VERSION}" -o dashboard-api .
@@ -62,7 +63,8 @@ FROM scratch AS final
 
 COPY --from=builder /workspace/api/dashboard-api /dashboard-api
 
-# Import the user and group files from the builder.
+# Import the user and group files and CA certificates from the builder.
+COPY --from=user /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=user /etc/passwd /etc/passwd
 COPY --from=user /etc/group /etc/group
 

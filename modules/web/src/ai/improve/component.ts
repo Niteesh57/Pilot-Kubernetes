@@ -12,29 +12,51 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {Component, OnInit} from '@angular/core';
+import {Component, OnDestroy, OnInit} from '@angular/core';
 import {MatSnackBar} from '@angular/material/snack-bar';
+import {Subscription} from 'rxjs';
 import {AIService, ImprovementFinding, ImprovementResponse} from '@common/services/global/ai.service';
+import {NamespaceService} from '@common/services/global/namespace';
 
 @Component({
   selector: 'kd-ai-improve',
   templateUrl: './template.html',
   styleUrls: ['./style.scss'],
 })
-export class AIImproveComponent implements OnInit {
+export class AIImproveComponent implements OnInit, OnDestroy {
   isAuditing = false;
   response: ImprovementResponse | null = null;
   error: string | null = null;
   selectedNamespace = '';
   categoryFilter = 'ALL';
+  private nsSub_?: Subscription;
 
   constructor(
     private readonly aiService: AIService,
+    private readonly namespaceService_: NamespaceService,
     private readonly snackBar: MatSnackBar,
   ) {}
 
   ngOnInit(): void {
-    this.runAudit();
+    this.selectedNamespace = this.getActiveNamespace();
+    this.nsSub_ = this.namespaceService_.onNamespaceChangeEvent.subscribe(() => {
+      this.selectedNamespace = this.getActiveNamespace();
+      if (this.response) {
+        this.runAudit();
+      }
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.nsSub_?.unsubscribe();
+  }
+
+  getActiveNamespace(): string {
+    const ns = this.namespaceService_.current();
+    if (!ns || ns === '_all' || this.namespaceService_.areMultipleNamespacesSelected()) {
+      return '';
+    }
+    return ns;
   }
 
   runAudit(): void {

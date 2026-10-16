@@ -18,7 +18,16 @@ import {SharedModule} from '../../shared.module';
 import {AIAnalystComponent} from './component';
 
 @NgModule({
-  imports: [SharedModule, RouterModule.forChild([{path: '', component: AIAnalystComponent}])],
+  imports: [
+    SharedModule,
+    RouterModule.forChild([
+      {
+        path: '',
+        component: AIAnalystComponent,
+        data: {breadcrumb: 'AI Diagnostics Studio'},
+      },
+    ]),
+  ],
   declarations: [AIAnalystComponent],
 })
 export class AIAnalystModule {}

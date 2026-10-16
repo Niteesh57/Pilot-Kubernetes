@@ -18,7 +18,16 @@ import {SharedModule} from '../../shared.module';
 import {AISecurityComponent} from './component';
 
 @NgModule({
-  imports: [SharedModule, RouterModule.forChild([{path: '', component: AISecurityComponent}])],
+  imports: [
+    SharedModule,
+    RouterModule.forChild([
+      {
+        path: '',
+        component: AISecurityComponent,
+        data: {breadcrumb: 'AI Security & RBAC'},
+      },
+    ]),
+  ],
   declarations: [AISecurityComponent],
 })
 export class AISecurityModule {}
