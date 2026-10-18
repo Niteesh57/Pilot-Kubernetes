@@ -16,6 +16,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -90,6 +91,12 @@ func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
 		Doc("Executes the autonomous SRE problem-solving agent").
 		Reads(ai.AgentRequest{}).
 		Returns(http.StatusOK, "OK", ai.AgentResponse{}))
+
+	ws.Route(ws.POST("/ai/agent/stream").To(apiHandler.handleAgentStream).
+		Doc("Executes the autonomous SRE problem-solving agent with real-time SSE streaming").
+		Reads(ai.AgentRequest{}).
+		Produces("text/event-stream").
+		Returns(http.StatusOK, "OK", nil))
 
 	ws.Route(ws.GET("/ai/resources").To(apiHandler.handleAIResources).
 		Doc("Returns available deployments, pods, and services for @mention autocomplete").
@@ -192,10 +199,12 @@ func (apiHandler *APIHandler) handleSaveAISettings(request *restful.Request, res
 		return
 	}
 
-	// If API key is masked (dots), load existing and preserve it
-	if len(settings.APIKey) > 0 && isAPIKeyMasked(settings.APIKey) {
+	// If API key is empty or masked (dots), preserve the existing configured key
+	if settings.APIKey == "" || isAPIKeyMasked(settings.APIKey) {
 		existing := ai.LoadAISettings(k8sClient)
-		settings.APIKey = existing.APIKey
+		if existing != nil && existing.APIKey != "" {
+			settings.APIKey = existing.APIKey
+		}
 	}
 
 	if err := ai.SaveAISettings(k8sClient, settings); err != nil {
@@ -313,6 +322,65 @@ func (apiHandler *APIHandler) handleAgent(request *restful.Request, response *re
 	}
 	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
 }
+
+func (apiHandler *APIHandler) handleAgentStream(request *restful.Request, response *restful.Response) {
+	k8sClient, err := getK8sClient(request.Request)
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+
+	req := new(ai.AgentRequest)
+	if err := request.ReadEntity(req); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+
+	w := response.ResponseWriter
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		apiHandler.handleAgent(request, response)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	sendSSE := func(event string, data interface{}) {
+		b, err := json.Marshal(data)
+		if err == nil {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(b))
+			flusher.Flush()
+		}
+	}
+
+	settings := ai.LoadAISettings(k8sClient)
+	result, err := ai.RunAgentQueryWithStream(
+		request.Request.Context(),
+		k8sClient,
+		settings,
+		req,
+		newGraphContextProvider(request),
+		func(step ai.AgentStep) {
+			sendSSE("step", step)
+		},
+		func(chunk string) {
+			sendSSE("token", chunk)
+		},
+	)
+
+	if err != nil {
+		sendSSE("error", err.Error())
+		return
+	}
+
+	sendSSE("done", result)
+}
+
 
 func (apiHandler *APIHandler) handleAIResources(request *restful.Request, response *restful.Response) {
 	k8sClient, err := getK8sClient(request.Request)
@@ -525,9 +593,44 @@ func enrichSecurityAttackPaths(request *restful.Request, namespace string, resul
 	if err != nil {
 		return
 	}
+	seen := make(map[string]bool)
 	for _, p := range paths {
+		if p.ServiceAccount == "" || p.Role == "" {
+			continue
+		}
+		ns := p.Namespace
+		if ns == "" {
+			ns = "cluster"
+		}
+		key := fmt.Sprintf("%s:%s:%s", p.ServiceAccount, p.Binding, p.Role)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		severity := strings.ToLower(p.Severity)
+		if severity == "" {
+			severity = "high"
+		}
+
 		result.AttackPaths = append(result.AttackPaths, fmt.Sprintf(
-			"%s/%s -> %s -> %s [%s]", p.ServiceAccount, p.Namespace, p.Binding, p.Role, p.Severity))
+			"%s (%s) → %s → %s [%s]", p.ServiceAccount, ns, p.Binding, p.Role, strings.ToUpper(severity)))
+
+		// Also merge into unified findings list
+		kind := p.BindingKind
+		if kind == "" {
+			kind = "ClusterRoleBinding"
+		}
+		result.Findings = append(result.Findings, ai.SecurityFinding{
+			Kind:      "ServiceAccount",
+			Name:      p.ServiceAccount,
+			Namespace: p.Namespace,
+			Category:  "privilege-escalation",
+			Severity:  severity,
+			Issue:     fmt.Sprintf("ServiceAccount '%s' grants administrative '%s' access via '%s'.", p.ServiceAccount, p.Role, p.Binding),
+			Details:   fmt.Sprintf("RBAC privilege-escalation pathway: ServiceAccount '%s' in namespace '%s' is bound to '%s' via %s '%s'.", p.ServiceAccount, ns, p.Role, kind, p.Binding),
+			YAMLPatch: fmt.Sprintf("kubectl delete %s %s", strings.ToLower(kind), p.Binding),
+		})
 	}
 }
 

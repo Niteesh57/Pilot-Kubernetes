@@ -14,7 +14,7 @@
 
 import {Injectable} from '@angular/core';
 import {HttpClient} from '@angular/common/http';
-import {Observable} from 'rxjs';
+import {Observable, tap} from 'rxjs';
 
 export interface AISettings {
   provider: string;
@@ -129,6 +129,8 @@ export interface AgentResponse {
   rootCause?: string;
   commands?: string[];
   yamlPatches?: string[];
+  followUps?: string[];
+  cypherQueries?: string[];
   graphContext?: string;
 }
 
@@ -208,6 +210,12 @@ export interface AttackPath {
 export class AIService {
   private readonly apiBase = 'api/v1';
 
+  // Global Security Audit State (persisted across page navigation)
+  isAnalyzingSecurity = false;
+  securityResponse: SecurityResponse | null = null;
+  securityError: string | null = null;
+  securityTargetNamespace = '';
+
   constructor(private readonly http: HttpClient) {}
 
   getSettings(): Observable<AISettings> {
@@ -237,11 +245,99 @@ export class AIService {
     const url = namespace
       ? `${this.apiBase}/ai/security/${namespace}`
       : `${this.apiBase}/ai/security`;
-    return this.http.post<SecurityResponse>(url, {});
+    this.isAnalyzingSecurity = true;
+    this.securityError = null;
+    this.securityTargetNamespace = namespace || '';
+    return this.http.post<SecurityResponse>(url, {}).pipe(
+      tap({
+        next: res => {
+          this.securityResponse = res;
+          this.isAnalyzingSecurity = false;
+        },
+        error: err => {
+          this.securityError =
+            err.error?.message || 'Security scan failed. Please verify AI Settings and cluster permissions.';
+          this.isAnalyzingSecurity = false;
+        },
+      }),
+    );
   }
 
   runAgent(req: AgentRequest): Observable<AgentResponse> {
     return this.http.post<AgentResponse>(`${this.apiBase}/ai/agent`, req);
+  }
+
+  runAgentStream(
+    req: AgentRequest,
+    onStep: (step: AgentStep) => void,
+    onToken: (token: string) => void,
+    onComplete: (res: AgentResponse) => void,
+    onError: (err: any) => void,
+  ): () => void {
+    const controller = new AbortController();
+    fetch(`${this.apiBase}/ai/agent/stream`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(req),
+      signal: controller.signal,
+    })
+      .then(async response => {
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText || `HTTP ${response.status}`);
+        }
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('ReadableStream not supported');
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, {stream: true});
+          const blocks = buffer.split('\n\n');
+          buffer = blocks.pop() || '';
+
+          for (const block of blocks) {
+            const trimmed = block.trim();
+            if (!trimmed) continue;
+            let event = 'message';
+            let data = '';
+            for (const line of trimmed.split('\n')) {
+              if (line.startsWith('event: ')) {
+                event = line.substring(7).trim();
+              } else if (line.startsWith('data: ')) {
+                data = line.substring(6).trim();
+              }
+            }
+            if (!data) continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              if (event === 'step') {
+                onStep(parsed as AgentStep);
+              } else if (event === 'token') {
+                onToken(parsed as string);
+              } else if (event === 'done') {
+                onComplete(parsed as AgentResponse);
+              } else if (event === 'error') {
+                onError(new Error(typeof parsed === 'string' ? parsed : JSON.stringify(parsed)));
+              }
+            } catch {
+              if (event === 'token') {
+                onToken(data);
+              }
+            }
+          }
+        }
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          onError(err);
+        }
+      });
+
+    return () => controller.abort();
   }
 
   getResources(namespace?: string): Observable<ResourcesResponse> {

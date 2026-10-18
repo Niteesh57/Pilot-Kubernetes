@@ -29,10 +29,6 @@ limitations under the License.
       </div>
 
       <div class="kd-action-box">
-        <div class="kd-scope-badge">
-          <mat-icon>layers</mat-icon>
-          <span>Scope: <strong>{{ selectedNamespace ? selectedNamespace : 'All Namespaces' }}</strong></span>
-        </div>
 
         <button mat-raised-button color="primary" (click)="runScan()" [disabled]="isScanning">
           <mat-icon *ngIf="!isScanning">security</mat-icon>
@@ -53,7 +49,7 @@ limitations under the License.
   <!-- Ready to Scan Initial State -->
   <mat-card *ngIf="!response && !isScanning && !error" class="kd-security-card kd-ready-card">
     <div class="kd-ready-content">
-      <mat-icon class="kd-ready-icon" color="primary">policy</mat-icon>
+      <mat-icon class="kd-ready-icon" color="primary">security</mat-icon>
       <h3>Ready to Audit Security Posture</h3>
       <p>
         Click <strong>Start Security Audit</strong> to evaluate RBAC privilege escalations, wildcard cluster roles,
@@ -114,17 +110,6 @@ limitations under the License.
     </mat-card-content>
   </mat-card>
 
-  <!-- FalkorDB Attack Paths -->
-  <mat-card *ngIf="response?.attackPaths?.length" class="kd-security-card">
-    <mat-card-header>
-      <mat-icon mat-card-avatar color="warn">lan</mat-icon>
-      <mat-card-title>FalkorDB Privilege-Escalation Paths</mat-card-title>
-      <mat-card-subtitle>ServiceAccount → Binding → Sensitive Role/ClusterRole</mat-card-subtitle>
-    </mat-card-header>
-    <mat-card-content>
-      <div class="kd-attack-path" *ngFor="let p of response.attackPaths">{{ p }}</div>
-    </mat-card-content>
-  </mat-card>
 
   <!-- Findings List -->
   <mat-card *ngIf="response" class="kd-security-card">

@@ -14,157 +14,170 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-<mat-card class="kd-ai-settings-card">
-  <mat-card-header>
-    <mat-card-title>
-      <mat-icon>smart_toy</mat-icon>
-      AI Platform Settings
-    </mat-card-title>
-    <mat-card-subtitle>Configure AI providers and FalkorDB knowledge graph connectivity.</mat-card-subtitle>
-  </mat-card-header>
+<kd-card [initialized]="!isLoading" [expandable]="true">
+  <div title>AI Platform Settings</div>
+  <div content>
+    <p>
+      Configure AI providers (OpenAI, Gemini, Anthropic, Grok, Ollama) and FalkorDB knowledge graph integration for autonomous cluster SRE investigation and root cause analysis.
+    </p>
+    <br />
 
-  <mat-card-content>
     <div *ngIf="isLoading" class="kd-ai-loading">
-      <mat-progress-spinner mode="indeterminate" diameter="32"></mat-progress-spinner>
-      <span>Loading settings...</span>
+      <mat-spinner diameter="32"></mat-spinner>
+      <span>Loading AI platform settings...</span>
     </div>
 
     <form [formGroup]="form" *ngIf="!isLoading">
-
-      <!-- Section: AI Provider -->
-      <div class="kd-ai-section">
-        <h3 class="kd-ai-section-title">AI Provider</h3>
-
-        <mat-form-field appearance="outline" class="kd-ai-field">
-          <mat-label>Provider</mat-label>
+      <!-- AI Provider -->
+      <kd-settings-entry
+        key="AI Provider"
+        desc="Select the LLM intelligence engine used for root cause analysis and SRE problem solving."
+      >
+        <mat-form-field fxFlex>
           <mat-select formControlName="provider" id="ai-provider-select">
             <mat-option *ngFor="let p of providers" [value]="p.value">
               {{ p.label }}
             </mat-option>
           </mat-select>
-          <mat-hint>Select the AI provider to use for analysis and agent queries.</mat-hint>
         </mat-form-field>
+      </kd-settings-entry>
 
-        <mat-form-field appearance="outline" class="kd-ai-field">
-          <mat-label>Base URL</mat-label>
+      <!-- Base URL -->
+      <kd-settings-entry
+        key="Base URL"
+        desc="API endpoint URL. Use provider default or custom local LLM endpoint (e.g. Ollama, vLLM)."
+      >
+        <mat-form-field fxFlex>
           <input matInput formControlName="baseUrl" id="ai-base-url" placeholder="https://api.openai.com/v1" />
-          <mat-hint>Leave as default or enter a custom endpoint (e.g. Ollama, vLLM).</mat-hint>
         </mat-form-field>
+      </kd-settings-entry>
 
-        <mat-form-field appearance="outline" class="kd-ai-field">
-          <mat-label>API Key</mat-label>
+      <!-- API Key -->
+      <kd-settings-entry
+        key="API Key"
+        desc="Authentication key for your AI provider. Stored securely in cluster secret. Leave blank to preserve existing key."
+      >
+        <mat-form-field fxFlex>
           <input
             matInput
             formControlName="apiKey"
             id="ai-api-key"
             [type]="showApiKey ? 'text' : 'password'"
-            placeholder="Leave blank to keep existing key"
+            placeholder="•••••••••••••••• (Leave blank to keep saved key)"
           />
           <button mat-icon-button matSuffix (click)="showApiKey = !showApiKey" type="button" [attr.aria-label]="showApiKey ? 'Hide key' : 'Show key'">
             <mat-icon>{{ showApiKey ? 'visibility_off' : 'visibility' }}</mat-icon>
           </button>
-          <mat-hint>Leave blank to preserve the saved API key.</mat-hint>
         </mat-form-field>
+      </kd-settings-entry>
 
-        <mat-form-field appearance="outline" class="kd-ai-field">
-          <mat-label>Model</mat-label>
-          <mat-select formControlName="model" id="ai-model-select" *ngIf="availableModels.length > 0; else modelInput">
+      <!-- Model -->
+      <kd-settings-entry
+        key="Model"
+        desc="Target model identifier (e.g. gpt-4o-mini, gemini-1.5-flash, claude-3-5-sonnet). Click Verify to auto-discover models."
+      >
+        <mat-form-field fxFlex *ngIf="availableModels.length > 0; else textModel">
+          <mat-select formControlName="model" id="ai-model-select">
             <mat-option *ngFor="let m of availableModels" [value]="m">{{ m }}</mat-option>
           </mat-select>
-          <ng-template #modelInput>
-            <input matInput formControlName="model" id="ai-model-text" placeholder="e.g. gpt-4o-mini, gemini-1.5-flash" />
-          </ng-template>
-          <mat-hint>Model identifier. Click Verify to auto-discover available models.</mat-hint>
         </mat-form-field>
+        <ng-template #textModel>
+          <mat-form-field fxFlex>
+            <input matInput formControlName="model" id="ai-model-text" placeholder="e.g. gpt-4o-mini, gemini-1.5-flash" />
+          </mat-form-field>
+        </ng-template>
+      </kd-settings-entry>
 
-        <!-- Connection Verification -->
-        <div class="kd-ai-verify-row">
+      <!-- Connectivity Verification -->
+      <kd-settings-entry
+        key="Connectivity Verification"
+        desc="Test end-to-end communication with the AI provider endpoint and measure response latency."
+      >
+        <div fxFlex fxLayout="row" fxLayoutAlign="start center" class="kd-verify-container">
           <button
             mat-stroked-button
+            color="accent"
             id="ai-verify-btn"
             (click)="verifyConnection()"
             [disabled]="isVerifying"
             type="button"
           >
-            <mat-icon *ngIf="!isVerifying">wifi_tethering</mat-icon>
-            <mat-progress-spinner *ngIf="isVerifying" mode="indeterminate" diameter="18"></mat-progress-spinner>
-            {{ isVerifying ? 'Verifying...' : 'Verify Connection' }}
+            <mat-icon *ngIf="!isVerifying">network_check</mat-icon>
+            <mat-spinner *ngIf="isVerifying" diameter="18"></mat-spinner>
+            <span>{{ isVerifying ? 'Testing Connection...' : 'Verify Connection' }}</span>
           </button>
 
-          <div class="kd-verify-result" *ngIf="verifyResult">
-            <mat-chip-listbox>
-              <mat-chip
-                [color]="verifyResult.connected ? 'primary' : 'warn'"
-                selected
-              >
-                <mat-icon matChipAvatar>{{ verifyResult.connected ? 'check_circle' : 'error' }}</mat-icon>
-                {{ verifyResult.connected ? 'Connected' : 'Failed' }}
-                <span *ngIf="verifyResult.connected"> · {{ verifyResult.latencyMs }}ms</span>
-              </mat-chip>
-            </mat-chip-listbox>
-            <span class="kd-verify-error" *ngIf="verifyResult.errorMsg">{{ verifyResult.errorMsg }}</span>
+          <div *ngIf="verifyResult" class="kd-verify-status">
+            <span class="kd-status-chip" [ngClass]="verifyResult.connected ? 'kd-status-ok' : 'kd-status-err'">
+              <mat-icon>{{ verifyResult.connected ? 'check_circle' : 'cancel' }}</mat-icon>
+              <span>{{ verifyResult.connected ? 'Connected (' + verifyResult.latencyMs + 'ms)' : 'Connection Failed' }}</span>
+            </span>
+            <span *ngIf="verifyResult.errorMsg" class="kd-verify-err-msg">{{ verifyResult.errorMsg }}</span>
           </div>
         </div>
-      </div>
+      </kd-settings-entry>
 
-      <mat-divider></mat-divider>
-
-      <!-- Section: FalkorDB -->
-      <div class="kd-ai-section">
-        <h3 class="kd-ai-section-title">
-          <mat-icon>hub</mat-icon>
-          FalkorDB Knowledge Graph
-        </h3>
-
-        <mat-form-field appearance="outline" class="kd-ai-field">
-          <mat-label>FalkorDB Address</mat-label>
-          <input matInput formControlName="falkordbAddr" id="falkordb-addr" placeholder="falkordb.kubepilot.svc.cluster.local:6379" />
-          <mat-hint>Redis-compatible address of FalkorDB. Default: falkordb.kubepilot.svc.cluster.local:6379</mat-hint>
+      <!-- FalkorDB Address -->
+      <kd-settings-entry
+        key="FalkorDB Address"
+        desc="Redis-compatible endpoint address for FalkorDB knowledge graph backend."
+      >
+        <mat-form-field fxFlex>
+          <input matInput formControlName="falkordbAddr" id="falkordb-addr" placeholder="falkordb.kubernetes-dashboard.svc.cluster.local:6379" />
         </mat-form-field>
+      </kd-settings-entry>
 
-        <mat-form-field appearance="outline" class="kd-ai-field">
-          <mat-label>Graph Name</mat-label>
+      <!-- FalkorDB Graph Name -->
+      <kd-settings-entry
+        key="FalkorDB Graph Name"
+        desc="FalkorDB graph key name storing live topology relationships and blast radius paths."
+      >
+        <mat-form-field fxFlex>
           <input matInput formControlName="falkordbGraphName" id="falkordb-graph" placeholder="kubepilot" />
-          <mat-hint>FalkorDB graph name to store cluster topology. Default: kubepilot</mat-hint>
         </mat-form-field>
-      </div>
+      </kd-settings-entry>
 
-      <mat-divider></mat-divider>
-
-      <!-- Section: Model Parameters -->
-      <div class="kd-ai-section">
-        <h3 class="kd-ai-section-title">Model Parameters</h3>
-
-        <mat-form-field appearance="outline" class="kd-ai-field kd-ai-field--half">
-          <mat-label>Max Tokens</mat-label>
+      <!-- Max Tokens -->
+      <kd-settings-entry
+        key="Max Tokens"
+        desc="Maximum token budget for reasoning and response generation (256–32768)."
+      >
+        <mat-form-field fxFlex>
           <input matInput type="number" formControlName="maxTokens" id="ai-max-tokens" />
-          <mat-hint>Maximum response length (256–32768).</mat-hint>
         </mat-form-field>
+      </kd-settings-entry>
 
-        <mat-form-field appearance="outline" class="kd-ai-field kd-ai-field--half">
-          <mat-label>Temperature ({{ form.get('temperature').value }})</mat-label>
+      <!-- Temperature -->
+      <kd-settings-entry
+        key="Temperature"
+        desc="Reasoning determinism (0.0 = deterministic root-cause analysis, 1.0 = creative exploration). Recommended: 0.2–0.3."
+      >
+        <mat-form-field fxFlex>
           <input matInput type="number" formControlName="temperature" step="0.1" min="0" max="2" id="ai-temperature" />
-          <mat-hint>0 = deterministic, 1 = creative. Recommended: 0.2–0.4 for analysis.</mat-hint>
         </mat-form-field>
-      </div>
+      </kd-settings-entry>
 
+      <br /><br />
+      <button
+        [disabled]="form?.invalid || isSaving"
+        (click)="save()"
+        color="primary"
+        mat-raised-button
+        id="ai-save-btn"
+      >
+        <mat-spinner *ngIf="isSaving" diameter="18" style="display:inline-block; margin-right: 6px;"></mat-spinner>
+        <span>{{ isSaving ? 'Saving...' : 'Save' }}</span>
+      </button>
+      <button
+        type="button"
+        (click)="loadSettings()"
+        [disabled]="isLoading || isSaving"
+        color="primary"
+        mat-raised-button
+        id="ai-reset-btn"
+      >
+        Reload
+      </button>
     </form>
-  </mat-card-content>
-
-  <mat-card-actions align="end">
-    <button mat-button (click)="loadSettings()" [disabled]="isLoading || isSaving" type="button" id="ai-reset-btn">
-      Reset
-    </button>
-    <button
-      mat-flat-button
-      color="primary"
-      (click)="save()"
-      [disabled]="form?.invalid || isSaving"
-      type="button"
-      id="ai-save-btn"
-    >
-      <mat-progress-spinner *ngIf="isSaving" mode="indeterminate" diameter="18" style="display:inline-block"></mat-progress-spinner>
-      {{ isSaving ? 'Saving...' : 'Save Settings' }}
-    </button>
-  </mat-card-actions>
-</mat-card>
+  </div>
+</kd-card>

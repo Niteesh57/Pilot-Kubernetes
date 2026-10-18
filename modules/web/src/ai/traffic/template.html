@@ -19,7 +19,7 @@ limitations under the License.
   <mat-card class="kd-traffic-card kd-header-card">
     <div class="kd-header-content">
       <div class="kd-title-box">
-        <mat-icon color="primary" class="kd-header-icon">hub</mat-icon>
+        <mat-icon color="primary" class="kd-header-icon">device_hub</mat-icon>
         <div>
           <h2>Topology &amp; Graph Explorer</h2>
           <p class="kd-subtitle">
@@ -29,11 +29,6 @@ limitations under the License.
       </div>
 
       <div class="kd-actions-box">
-        <!-- Active Namespace Scope Badge -->
-        <div class="kd-scope-badge">
-          <mat-icon>layers</mat-icon>
-          <span>Scope: <strong>{{ selectedNamespace ? selectedNamespace : 'All Namespaces' }}</strong></span>
-        </div>
 
         <!-- Workload / Application Filter Dropdown -->
         <mat-form-field appearance="outline" class="kd-group-select" *ngIf="availableGroups.length > 0">
@@ -113,13 +108,13 @@ limitations under the License.
       <!-- Loading State -->
       <div *ngIf="isLoading" class="kd-canvas-loading">
         <mat-spinner diameter="48"></mat-spinner>
-        <span>Discovering cluster topology for {{ selectedNamespace || 'cluster' }}...</span>
+        <span>Discovering cluster topology...</span>
       </div>
 
       <!-- Empty State -->
       <div *ngIf="!isLoading && layoutNodes.length === 0" class="kd-canvas-empty">
-        <mat-icon>account_tree</mat-icon>
-        <p>No resources found in namespace <strong>{{ selectedNamespace || 'all' }}</strong> matching current filters.</p>
+        <mat-icon>device_hub</mat-icon>
+        <p>No resources found in cluster matching current filters.</p>
       </div>
 
       <!-- SVG Graph Layer -->
@@ -211,85 +206,163 @@ limitations under the License.
           </g>
         </g>
       </svg>
+
+      <!-- Slide-over Inspector Drawer Docked Inside Canvas (Native Kubernetes Dashboard UI) -->
+      <div
+        *ngIf="selectedNode"
+        class="kd-node-inspector"
+      >
+        <div class="kd-inspector-header">
+          <div class="kd-inspector-title-group">
+            <div class="kd-inspector-meta">
+              <span class="kd-kind-label">{{ selectedNode.kind }}</span>
+              <span class="kd-bullet">&bull;</span>
+              <span>{{ selectedNode.namespace || 'Cluster-Wide' }}</span>
+            </div>
+            <h3 class="kd-inspector-name">
+              <a
+                *ngIf="getResourceHref(selectedNode).length > 0; else noLink"
+                [routerLink]="getResourceHref(selectedNode)"
+                title="Open resource in Kubernetes Dashboard"
+              >
+                {{ selectedNode.name }}
+              </a>
+              <ng-template #noLink>{{ selectedNode.name }}</ng-template>
+            </h3>
+          </div>
+          <button mat-icon-button (click)="closeDrawer()" title="Close inspector">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+
+        <mat-divider></mat-divider>
+
+        <div class="kd-inspector-body">
+          <div class="kd-inspector-section">
+            <div class="kd-section-header">Resource Information</div>
+            <div class="kd-props-table">
+              <div class="kd-prop-row">
+                <span class="kd-prop-label">Status</span>
+                <span class="kd-prop-val status-val" [class]="getStatusClass(selectedNode.status)">
+                  {{ selectedNode.status }}
+                </span>
+              </div>
+              <div class="kd-prop-row" *ngIf="selectedNode.group">
+                <span class="kd-prop-label">Application</span>
+                <span class="kd-prop-val">{{ selectedNode.group }}</span>
+              </div>
+              <div class="kd-prop-row" *ngFor="let p of getPropertiesList(selectedNode)">
+                <span class="kd-prop-label">{{ p.key }}</span>
+                <span class="kd-prop-val font-mono">{{ p.value }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Inbound Routes -->
+          <div class="kd-inspector-section" *ngIf="getInboundEdges(selectedNode.id).length > 0">
+            <mat-divider class="kd-section-divider"></mat-divider>
+            <div class="kd-section-header">
+              Inbound Routes ({{ getInboundEdges(selectedNode.id).length }})
+            </div>
+            <div class="kd-conn-list">
+              <div class="kd-conn-item" *ngFor="let inEdge of getInboundEdges(selectedNode.id)">
+                <mat-icon inline class="kd-conn-icon">arrow_downward</mat-icon>
+                <span class="kd-conn-text">{{ inEdge.source }}</span>
+                <span *ngIf="inEdge.port" class="kd-conn-port">:{{ inEdge.port }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Outbound Dependencies -->
+          <div class="kd-inspector-section" *ngIf="getOutboundEdges(selectedNode.id).length > 0">
+            <mat-divider class="kd-section-divider"></mat-divider>
+            <div class="kd-section-header">
+              Outbound Dependencies ({{ getOutboundEdges(selectedNode.id).length }})
+            </div>
+            <div class="kd-conn-list">
+              <div class="kd-conn-item" *ngFor="let outEdge of getOutboundEdges(selectedNode.id)">
+                <mat-icon inline class="kd-conn-icon">arrow_upward</mat-icon>
+                <span class="kd-conn-text">{{ outEdge.target }}</span>
+                <span *ngIf="outEdge.type" class="kd-conn-type">({{ outEdge.type }})</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Inline Autonomous AI Investigation Section -->
+          <div
+            class="kd-inspector-section kd-investigation-section"
+            *ngIf="isInvestigating || investigationText || investigationResult || investigationError"
+          >
+            <mat-divider class="kd-section-divider"></mat-divider>
+            <div class="kd-section-header kd-ai-header">
+              <div class="kd-ai-header-left">
+                <mat-icon inline>memory</mat-icon>
+                <span>Live AI Diagnosis</span>
+              </div>
+              <button
+                mat-icon-button
+                *ngIf="isInvestigating"
+                (click)="stopInvestigation()"
+                class="kd-stop-btn"
+                title="Stop Analysis"
+              >
+                <mat-icon>stop</mat-icon>
+              </button>
+            </div>
+
+            <!-- Spinner indicator while thinking -->
+            <div class="kd-investigation-loading" *ngIf="isInvestigating && !investigationText">
+              <mat-spinner diameter="18" color="primary"></mat-spinner>
+              <span>Inspecting live telemetry, conditions &amp; logs...</span>
+            </div>
+
+            <!-- Error message if failed -->
+            <div class="kd-investigation-error" *ngIf="investigationError">
+              <mat-icon color="warn">error_outline</mat-icon>
+              <span>{{ investigationError }}</span>
+            </div>
+
+            <!-- Streaming or completed markdown analysis -->
+            <div class="kd-investigation-content" *ngIf="investigationText">
+              <div class="kd-markdown" [innerHTML]="investigationText | kdMarkdown"></div>
+              <span class="kd-streaming-cursor" *ngIf="isInvestigating"></span>
+            </div>
+
+            <!-- Root cause callout if identified -->
+            <div class="kd-rootcause-card" *ngIf="investigationResult?.rootCause">
+              <div class="kd-rootcause-header">
+                <mat-icon color="warn">warning</mat-icon>
+                <span>Root Cause</span>
+              </div>
+              <div class="kd-markdown" [innerHTML]="investigationResult.rootCause | kdMarkdown"></div>
+            </div>
+          </div>
+        </div>
+
+        <mat-divider></mat-divider>
+
+        <div class="kd-inspector-actions">
+          <a
+            mat-button
+            *ngIf="getResourceHref(selectedNode).length > 0"
+            [routerLink]="getResourceHref(selectedNode)"
+            class="kd-detail-btn"
+            title="Open in Kubernetes Dashboard"
+          >
+            <mat-icon>open_in_new</mat-icon>
+            <span>View Details</span>
+          </a>
+          <button
+            mat-stroked-button
+            color="primary"
+            (click)="runRCA(selectedNode)"
+          >
+            <mat-spinner diameter="16" *ngIf="isInvestigating"></mat-spinner>
+            <mat-icon *ngIf="!isInvestigating">memory</mat-icon>
+            <span>{{ isInvestigating ? 'Stop' : (investigationText ? 'Re-analyze' : 'Investigate') }}</span>
+          </button>
+        </div>
+      </div>
     </div>
   </mat-card>
-
-  <!-- Slide-Over Resource Inspector Drawer -->
-  <div class="kd-inspector-overlay" *ngIf="selectedNode" (click)="closeDrawer()">
-    <div class="kd-inspector-panel" (click)="$event.stopPropagation()">
-      <div class="inspector-header">
-        <div class="inspector-title-box">
-          <span class="inspector-kind-badge" [class]="selectedNode.kind.toLowerCase()">
-            {{ selectedNode.kind }}
-          </span>
-          <h3>{{ selectedNode.name }}</h3>
-        </div>
-        <button mat-icon-button (click)="closeDrawer()">
-          <mat-icon>close</mat-icon>
-        </button>
-      </div>
-
-      <div class="inspector-body">
-        <div class="inspector-section">
-          <div class="section-label">Namespace</div>
-          <div class="section-val">{{ selectedNode.namespace || 'Cluster-wide' }}</div>
-        </div>
-
-        <div class="inspector-section">
-          <div class="section-label">Status</div>
-          <div class="section-val status-val" [class]="getStatusClass(selectedNode.status)">
-            {{ selectedNode.status }}
-          </div>
-        </div>
-
-        <div class="inspector-section" *ngIf="selectedNode.group">
-          <div class="section-label">Application Group</div>
-          <div class="section-val">{{ selectedNode.group }}</div>
-        </div>
-
-        <!-- Properties Map -->
-        <div class="inspector-section" *ngIf="getPropertiesList(selectedNode).length > 0">
-          <div class="section-label">Properties</div>
-          <div class="props-grid">
-            <div class="prop-item" *ngFor="let p of getPropertiesList(selectedNode)">
-              <span class="prop-k">{{ p.key }}:</span>
-              <span class="prop-v">{{ p.value }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Inbound Connections -->
-        <div class="inspector-section">
-          <div class="section-label">Inbound Routes ({{ getInboundEdges(selectedNode.id).length }})</div>
-          <div *ngIf="getInboundEdges(selectedNode.id).length === 0" class="empty-links">None</div>
-          <div class="links-list" *ngIf="getInboundEdges(selectedNode.id).length > 0">
-            <div class="link-item" *ngFor="let inEdge of getInboundEdges(selectedNode.id)">
-              <mat-icon inline>arrow_downward</mat-icon>
-              <span>{{ inEdge.source }}</span>
-              <span *ngIf="inEdge.port" class="link-port">:{{ inEdge.port }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Outbound Dependencies -->
-        <div class="inspector-section">
-          <div class="section-label">Outbound Dependencies ({{ getOutboundEdges(selectedNode.id).length }})</div>
-          <div *ngIf="getOutboundEdges(selectedNode.id).length === 0" class="empty-links">None</div>
-          <div class="links-list" *ngIf="getOutboundEdges(selectedNode.id).length > 0">
-            <div class="link-item" *ngFor="let outEdge of getOutboundEdges(selectedNode.id)">
-              <mat-icon inline>arrow_upward</mat-icon>
-              <span>{{ outEdge.target }}</span>
-              <span *ngIf="outEdge.type" class="link-type">({{ outEdge.type }})</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="inspector-actions">
-        <button mat-raised-button color="primary" (click)="runRCA(selectedNode)">
-          <mat-icon>psychology</mat-icon> Investigate with AI Operations
-        </button>
-      </div>
-    </div>
-  </div>
 </div>

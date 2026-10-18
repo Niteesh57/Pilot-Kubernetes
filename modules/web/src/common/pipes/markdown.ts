@@ -47,7 +47,7 @@ export function parseMarkdownToHtml(markdown: string | null | undefined): string
     const langBadge = lang ? `<span class="kd-md-code-lang">${escapeHtml(lang)}</span>` : '';
     const html = `<div class="kd-md-code-block">${langBadge ? `<div class="kd-md-code-header">${langBadge}</div>` : ''}<pre><code class="language-${lang || 'none'}">${escapedCode}</code></pre></div>`;
     codeBlocks.push(html);
-    return `___KD_CODE_BLOCK_${codeBlocks.length - 1}___`;
+    return `@@@KDCODEBLOCK${codeBlocks.length - 1}@@@`;
   });
 
   // Extract inline code
@@ -55,7 +55,7 @@ export function parseMarkdownToHtml(markdown: string | null | undefined): string
   src = src.replace(/`([^`\n]+)`/g, (_, code) => {
     const escaped = escapeHtml(code);
     inlineCodes.push(`<code class="kd-md-inline-code">${escaped}</code>`);
-    return `___KD_INLINE_CODE_${inlineCodes.length - 1}___`;
+    return `@@@KDINLINECODE${inlineCodes.length - 1}@@@`;
   });
 
   // Split into lines
@@ -114,7 +114,7 @@ export function parseMarkdownToHtml(markdown: string | null | undefined): string
     const trimmed = line.trim();
 
     // Check code block placeholder
-    if (trimmed.startsWith('___KD_CODE_BLOCK_') && trimmed.endsWith('___')) {
+    if (trimmed.startsWith('@@@KDCODEBLOCK') && trimmed.endsWith('@@@')) {
       flushParagraph();
       closeLists();
       result.push(trimmed);
@@ -208,12 +208,12 @@ export function parseMarkdownToHtml(markdown: string | null | undefined): string
   let finalHtml = result.join('\n');
 
   // Restore inline codes
-  finalHtml = finalHtml.replace(/___KD_INLINE_CODE_(\d+)___/g, (_, idx) => {
+  finalHtml = finalHtml.replace(/@@@KDINLINECODE(\d+)@@@/g, (_, idx) => {
     return inlineCodes[parseInt(idx, 10)] || '';
   });
 
   // Restore code blocks
-  finalHtml = finalHtml.replace(/___KD_CODE_BLOCK_(\d+)___/g, (_, idx) => {
+  finalHtml = finalHtml.replace(/@@@KDCODEBLOCK(\d+)@@@/g, (_, idx) => {
     return codeBlocks[parseInt(idx, 10)] || '';
   });
 

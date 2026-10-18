@@ -16,82 +16,60 @@
   display: block;
 }
 
-.kd-ai-settings-card {
-  max-width: 800px;
-  margin: 0 auto 24px;
-
-  mat-card-header {
-    mat-icon {
-      margin-right: 8px;
-      vertical-align: middle;
-    }
-  }
-}
-
 .kd-ai-loading {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 24px 0;
-  color: rgba(0, 0, 0, 0.54);
-}
-
-.kd-ai-section {
   padding: 16px 0;
-
-  &-title {
-    font-size: 14px;
-    font-weight: 500;
-    color: rgba(0, 0, 0, 0.6);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin: 0 0 16px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-
-    mat-icon {
-      font-size: 18px;
-      height: 18px;
-      width: 18px;
-    }
-  }
+  opacity: 0.7;
 }
 
-.kd-ai-field {
-  width: 100%;
-  margin-bottom: 8px;
-
-  &--half {
-    width: calc(50% - 8px);
-    margin-right: 8px;
-  }
-}
-
-.kd-ai-verify-row {
+.kd-verify-container {
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-top: 8px;
   flex-wrap: wrap;
+  padding: 4px 0;
 }
 
-.kd-verify-result {
+.kd-verify-status {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.kd-verify-error {
+.kd-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 500;
+
+  mat-icon {
+    font-size: 16px;
+    height: 16px;
+    width: 16px;
+  }
+
+  &.kd-status-ok {
+    background: rgba(76, 175, 80, 0.15);
+    color: #4caf50;
+  }
+
+  &.kd-status-err {
+    background: rgba(244, 67, 54, 0.15);
+    color: #f44336;
+  }
+}
+
+.kd-verify-err-msg {
   font-size: 12px;
   color: #f44336;
+  margin-left: 8px;
 }
 
-mat-divider {
-  margin: 8px 0 16px;
-}
-
-mat-card-actions {
-  padding: 8px 16px;
-  gap: 8px;
+button[mat-raised-button] {
+  margin-right: 8px;
 }

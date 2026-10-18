@@ -28,10 +28,19 @@ import {
   AgentMessage,
   AgentRequest,
   AgentResponse,
-  ResourceItem,
   ResourcesResponse,
 } from '@common/services/global/ai.service';
 import {NamespaceService} from '@common/services/global/namespace';
+
+export interface ConversationTurn {
+  id: string;
+  query: string;
+  queryTime: Date;
+  text: string;
+  response?: AgentResponse;
+  stepsExpanded?: boolean;
+  isStreaming?: boolean;
+}
 
 export interface ChatMessage {
   id: string;
@@ -40,6 +49,7 @@ export interface ChatMessage {
   timestamp: Date;
   response?: AgentResponse;
   stepsExpanded?: boolean;
+  isStreaming?: boolean;
 }
 
 export interface MentionOption {
@@ -60,9 +70,30 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
   @ViewChild('chatScrollContainer') private chatScrollContainer_?: ElementRef<HTMLDivElement>;
   @ViewChild('chatInput') private chatInput_?: ElementRef<HTMLTextAreaElement>;
 
-  messages: ChatMessage[] = [];
+  turns: ConversationTurn[] = [];
+
+  get messages(): ChatMessage[] {
+    const msgs: ChatMessage[] = [];
+    for (const t of this.turns) {
+      msgs.push({id: 'usr_' + t.id, role: 'user', text: t.query, timestamp: t.queryTime});
+      if (t.text || t.isStreaming) {
+        msgs.push({
+          id: 'asst_' + t.id,
+          role: 'assistant',
+          text: t.text,
+          timestamp: t.queryTime,
+          response: t.response,
+          stepsExpanded: t.stepsExpanded,
+          isStreaming: t.isStreaming,
+        });
+      }
+    }
+    return msgs;
+  }
   inputText = '';
   isThinking = false;
+  isStreaming = false;
+  private cancelStream_?: () => void;
   error: string | null = null;
   selectedNamespace = '';
 
@@ -87,17 +118,17 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
     {
       title: 'Inter-Service Latency',
       query: 'Investigate inter-service communication latency and failure endpoints',
-      icon: 'sync_alt',
+      icon: 'swap_horiz',
     },
     {
       title: 'Audit RBAC Privileges',
       query: 'Audit RBAC permissions for overprivileged ServiceAccounts and cluster-admin bindings',
-      icon: 'policy',
+      icon: 'security',
     },
     {
       title: 'Node Drain Blast Radius',
       query: 'Assess blast radius and dependent workloads if worker node is drained',
-      icon: 'hub',
+      icon: 'device_hub',
     },
   ];
 
@@ -109,13 +140,8 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
   ) {}
 
   ngOnInit(): void {
-    this.selectedNamespace = this.getActiveNamespace();
+    this.selectedNamespace = '';
     this.loadResources();
-
-    this.nsSub_ = this.namespaceService_.onNamespaceChangeEvent.subscribe(() => {
-      this.selectedNamespace = this.getActiveNamespace();
-      this.loadResources();
-    });
 
     this.queryParamsSub_ = this.route.queryParams.subscribe(params => {
       if (params['query']) {
@@ -126,7 +152,6 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   ngOnDestroy(): void {
-    this.nsSub_?.unsubscribe();
     this.queryParamsSub_?.unsubscribe();
   }
 
@@ -137,16 +162,9 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
     }
   }
 
-  getActiveNamespace(): string {
-    const ns = this.namespaceService_.current();
-    if (!ns || ns === '_all' || this.namespaceService_.areMultipleNamespacesSelected()) {
-      return '';
-    }
-    return ns;
-  }
-
   loadResources(): void {
-    this.aiService.getResources(this.selectedNamespace || undefined).subscribe({
+    // SRE Agent operates cluster-wide across all namespaces
+    this.aiService.getResources().subscribe({
       next: res => {
         this.resources = res;
       },
@@ -164,23 +182,35 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (!textToSend || this.isThinking) return;
 
     this.showMentionPopup = false;
-    const userMsg: ChatMessage = {
-      id: 'usr_' + Date.now(),
-      role: 'user',
-      text: textToSend,
-      timestamp: new Date(),
-    };
-    this.messages.push(userMsg);
     this.inputText = '';
     this.error = null;
     this.isThinking = true;
+    this.isStreaming = true;
     this.shouldScrollBottom = true;
 
-    // Build conversation history from prior messages
-    const history: AgentMessage[] = this.messages.slice(0, -1).map(m => ({
-      role: m.role,
-      content: m.text,
-    }));
+    const turn: ConversationTurn = {
+      id: 'turn_' + Date.now(),
+      query: textToSend,
+      queryTime: new Date(),
+      text: '',
+      response: {
+        query: textToSend,
+        steps: [],
+        summary: '',
+      },
+      stepsExpanded: false,
+      isStreaming: true,
+    };
+    this.turns.push(turn);
+
+    // Build conversation history from prior completed turns
+    const history: AgentMessage[] = [];
+    for (const t of this.turns.slice(0, -1)) {
+      history.push({role: 'user', content: t.query});
+      if (t.text) {
+        history.push({role: 'assistant', content: t.text});
+      }
+    }
 
     const req: AgentRequest = {
       namespace: this.selectedNamespace || undefined,
@@ -188,30 +218,70 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
       history: history.length > 0 ? history : undefined,
     };
 
-    this.aiService.runAgent(req).subscribe({
-      next: res => {
-        const assistantMsg: ChatMessage = {
-          id: 'asst_' + Date.now(),
-          role: 'assistant',
-          text: res.summary,
-          response: res,
-          stepsExpanded: false,
-          timestamp: new Date(),
-        };
-        this.messages.push(assistantMsg);
-        this.isThinking = false;
+    this.cancelStream_ = this.aiService.runAgentStream(
+      req,
+      // onStep
+      step => {
+        if (!turn.response) {
+          turn.response = {query: textToSend, steps: [], summary: ''};
+        }
+        const existingIdx = turn.response.steps.findIndex(s => s.step === step.step);
+        if (existingIdx >= 0) {
+          turn.response.steps[existingIdx] = step;
+        } else {
+          turn.response.steps.push(step);
+        }
         this.shouldScrollBottom = true;
       },
-      error: err => {
-        this.error = err.error?.message || 'SRE Agent encountered an error executing query.';
-        this.isThinking = false;
+      // onToken
+      token => {
+        turn.text += token;
         this.shouldScrollBottom = true;
       },
-    });
+      // onComplete
+      res => {
+        turn.response = res;
+        // If raw tokens were raw JSON, display the extracted clean markdown summary
+        if (!turn.text || turn.text.trim().startsWith('{')) {
+          turn.text = res.summary;
+        }
+        turn.isStreaming = false;
+        this.isThinking = false;
+        this.isStreaming = false;
+        this.shouldScrollBottom = true;
+        this.cancelStream_ = undefined;
+      },
+      // onError
+      err => {
+        this.error = err.message || 'SRE Agent encountered an error executing query.';
+        turn.isStreaming = false;
+        this.isThinking = false;
+        this.isStreaming = false;
+        this.shouldScrollBottom = true;
+        this.cancelStream_ = undefined;
+      },
+    );
+  }
+
+  stopGeneration(): void {
+    if (this.cancelStream_) {
+      this.cancelStream_();
+      this.cancelStream_ = undefined;
+    }
+    this.isThinking = false;
+    this.isStreaming = false;
+    if (this.turns.length > 0) {
+      const last = this.turns[this.turns.length - 1];
+      last.isStreaming = false;
+    }
+  }
+
+  askFollowUp(question: string): void {
+    this.sendMessage(question);
   }
 
   clearChat(): void {
-    this.messages = [];
+    this.turns = [];
     this.error = null;
   }
 
@@ -222,8 +292,8 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
     }
   }
 
-  toggleSteps(msg: ChatMessage): void {
-    msg.stepsExpanded = !msg.stepsExpanded;
+  toggleSteps(item: ConversationTurn | ChatMessage): void {
+    item.stepsExpanded = !item.stepsExpanded;
   }
 
   copyToClipboard(text: string, label: string = 'Copied to clipboard'): void {

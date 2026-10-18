@@ -14,274 +14,275 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-<div class="kd-chat-layout">
-  <!-- Top Control Bar -->
-  <header class="kd-chat-header">
-    <div class="kd-header-left">
-      <div class="kd-avatar-box">
-        <mat-icon class="kd-bot-icon">psychology</mat-icon>
-      </div>
-      <div>
-        <h2 class="kd-chat-title">AI SRE Problem Solver</h2>
-        <p class="kd-chat-subtitle">
-          Autonomous multi-step investigation, targeted @resource log telemetry &amp; latency pathway analysis
-        </p>
-      </div>
-    </div>
-
-    <div class="kd-header-right">
-      <div class="kd-ns-badge" [matTooltip]="'Cluster scope for SRE diagnostics'">
-        <mat-icon>layers</mat-icon>
-        <span>Scope: <strong>{{ selectedNamespace ? selectedNamespace : 'All Namespaces' }}</strong></span>
-      </div>
-
-      <button
-        mat-stroked-button
-        color="warn"
-        class="kd-clear-btn"
-        (click)="clearChat()"
-        [disabled]="messages.length === 0 && !error"
-        matTooltip="Reset chat session"
-      >
-        <mat-icon>delete_sweep</mat-icon> New Chat
-      </button>
-    </div>
-  </header>
-
-  <!-- Chat Messages Thread -->
-  <div class="kd-chat-body" #chatScrollContainer>
-    <!-- Welcome & Prompt Starters (Empty State) -->
-    <div *ngIf="messages.length === 0 && !isThinking" class="kd-welcome-container">
-      <div class="kd-welcome-card">
-        <div class="kd-welcome-icon-wrap">
-          <mat-icon class="kd-welcome-icon">smart_toy</mat-icon>
-        </div>
-        <h3 class="kd-welcome-headline">How can I assist your cluster operations today?</h3>
-        <p class="kd-welcome-desc">
-          Ask any operational question or use <code>@</code> to mention specific resources
-          (e.g., <code>@deployment/my-app</code>, <code>@pod/backend-xyz</code>, or <code>@service/api-gateway</code>).
-          The SRE agent will inspect live pod logs, event trails, and inter-service latency.
-        </p>
-
-        <!-- Quick Prompts Grid -->
-        <div class="kd-quick-prompts-grid">
-          <div
-            class="kd-prompt-card"
-            *ngFor="let p of quickPrompts"
-            (click)="useQuickPrompt(p.query)"
-          >
-            <div class="kd-prompt-icon-box">
-              <mat-icon>{{ p.icon }}</mat-icon>
-            </div>
-            <div class="kd-prompt-info">
-              <span class="kd-prompt-title">{{ p.title }}</span>
-              <span class="kd-prompt-query">{{ p.query }}</span>
-            </div>
-            <mat-icon class="kd-prompt-arrow">arrow_forward</mat-icon>
-          </div>
+<div class="kd-agent-container">
+  <!-- Header Card -->
+  <mat-card class="kd-agent-card kd-header-card">
+    <div class="kd-header-content">
+      <div class="kd-title-box">
+        <mat-icon color="primary" class="kd-header-icon">memory</mat-icon>
+        <div>
+          <h2>AI SRE Problem Solver</h2>
+          <p class="kd-subtitle">
+            Autonomous multi-step investigation, targeted @resource log telemetry &amp; FalkorDB latency pathway analysis
+          </p>
         </div>
       </div>
-    </div>
 
-    <!-- Message Bubbles Timeline -->
-    <div class="kd-messages-list" *ngIf="messages.length > 0">
-      <div
-        class="kd-message-row"
-        *ngFor="let msg of messages"
-        [class.user-row]="msg.role === 'user'"
-        [class.assistant-row]="msg.role === 'assistant'"
-      >
-        <!-- User Message Bubble -->
-        <div *ngIf="msg.role === 'user'" class="kd-user-bubble">
-          <div class="kd-user-text">{{ msg.text }}</div>
-          <span class="kd-msg-time">{{ msg.timestamp | date:'shortTime' }}</span>
-        </div>
-
-        <!-- Assistant Message Bubble -->
-        <div *ngIf="msg.role === 'assistant'" class="kd-assistant-bubble">
-          <div class="kd-assistant-header">
-            <div class="kd-assistant-tag">
-              <mat-icon inline color="primary">psychology</mat-icon>
-              <span>Autonomous SRE Agent</span>
-            </div>
-            <span class="kd-msg-time">{{ msg.timestamp | date:'shortTime' }}</span>
-          </div>
-
-          <!-- Collapsible Investigation Trail -->
-          <div class="kd-investigation-trail" *ngIf="msg.response?.steps?.length">
-            <button
-              mat-button
-              class="kd-trail-toggle"
-              (click)="toggleSteps(msg)"
-            >
-              <mat-icon>{{ msg.stepsExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
-              <span>Investigation Trail ({{ msg.response.steps.length }} steps taken)</span>
-            </button>
-
-            <div class="kd-trail-content" *ngIf="msg.stepsExpanded">
-              <div class="kd-step-item" *ngFor="let step of msg.response.steps; let idx = index">
-                <div class="kd-step-num">{{ idx + 1 }}</div>
-                <div class="kd-step-details">
-                  <div class="kd-step-title">{{ step.description || step.step }}</div>
-                  <pre *ngIf="step.output" class="kd-step-output">{{ step.output }}</pre>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Findings & Executive Summary -->
-          <div class="kd-summary-box">
-            <div class="kd-markdown" [innerHTML]="msg.text | kdMarkdown"></div>
-          </div>
-
-          <!-- Root Cause Alert Card -->
-          <div class="kd-root-cause-card" *ngIf="msg.response?.rootCause">
-            <div class="kd-rc-header">
-              <mat-icon color="warn">warning</mat-icon>
-              <strong>Identified Root Cause</strong>
-            </div>
-            <div class="kd-rc-body kd-markdown" [innerHTML]="msg.response.rootCause | kdMarkdown"></div>
-          </div>
-
-          <!-- Actionable kubectl Commands -->
-          <div class="kd-commands-card" *ngIf="msg.response?.commands?.length">
-            <div class="kd-commands-header">
-              <mat-icon>terminal</mat-icon>
-              <span>Recommended Diagnostic &amp; Remediation Commands</span>
-            </div>
-            <div class="kd-commands-list">
-              <div class="kd-cmd-row" *ngFor="let cmd of msg.response.commands">
-                <code>{{ cmd }}</code>
-                <button
-                  mat-icon-button
-                  (click)="copyToClipboard(cmd, 'Command copied')"
-                  title="Copy command"
-                >
-                  <mat-icon>content_copy</mat-icon>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Suggested YAML Manifest / Patch -->
-          <div class="kd-patches-card" *ngIf="msg.response?.yamlPatches?.length">
-            <div class="kd-patch-header">
-              <div class="kd-patch-title">
-                <mat-icon>code</mat-icon>
-                <span>Suggested Remediation Manifest</span>
-              </div>
-            </div>
-            <div class="kd-patch-block" *ngFor="let patch of msg.response.yamlPatches">
-              <div class="kd-patch-top">
-                <span>YAML Patch</span>
-                <button
-                  mat-button
-                  color="accent"
-                  (click)="copyToClipboard(patch, 'YAML patch copied')"
-                >
-                  <mat-icon>content_copy</mat-icon> Copy YAML
-                </button>
-              </div>
-              <pre class="kd-code-block">{{ patch }}</pre>
-            </div>
-          </div>
-
-          <!-- FalkorDB Graph Context (if present) -->
-          <div class="kd-graph-context-card" *ngIf="msg.response?.graphContext">
-            <div class="kd-gc-header">
-              <mat-icon>hub</mat-icon>
-              <span>FalkorDB Topology Context</span>
-            </div>
-            <pre class="kd-code-block">{{ msg.response.graphContext }}</pre>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Thinking / Investigating State -->
-    <div class="kd-thinking-row" *ngIf="isThinking">
-      <div class="kd-thinking-bubble">
-        <mat-spinner diameter="24" color="primary"></mat-spinner>
-        <span class="kd-thinking-text">SRE Agent is inspecting live cluster telemetry, pod logs &amp; interconnections...</span>
-      </div>
-    </div>
-
-    <!-- Error Banner -->
-    <div class="kd-chat-error" *ngIf="error">
-      <mat-icon color="warn">error_outline</mat-icon>
-      <span>{{ error }}</span>
-    </div>
-  </div>
-
-  <!-- Chat Composer Area -->
-  <footer class="kd-composer-area">
-    <!-- Floating @mention Autocomplete Dropdown -->
-    <div class="kd-mention-popup" *ngIf="showMentionPopup">
-      <div class="kd-mention-header">
-        <mat-icon>alternate_email</mat-icon>
-        <span>Mention Kubernetes Resource (Use ↑ ↓ and Enter)</span>
-      </div>
-      <div class="kd-mention-list">
-        <div
-          class="kd-mention-item"
-          *ngFor="let opt of filteredMentionOptions; let i = index"
-          [class.active]="i === selectedMentionIndex"
-          (click)="selectMentionOption(opt)"
-          (mouseenter)="selectedMentionIndex = i"
-        >
-          <div class="kd-mention-left">
-            <mat-icon class="kd-kind-icon" [ngClass]="opt.kind">
-              {{
-                opt.kind === 'deployment'
-                  ? 'layers'
-                  : opt.kind === 'pod'
-                  ? 'view_in_ar'
-                  : opt.kind === 'service'
-                  ? 'alt_route'
-                  : 'folder'
-              }}
-            </mat-icon>
-            <span class="kd-mention-label">{{ opt.label }}</span>
-          </div>
-
-          <div class="kd-mention-right">
-            <span class="kd-mention-ns" *ngIf="opt.namespace">{{ opt.namespace }}</span>
-            <span class="kd-mention-status" *ngIf="opt.status">{{ opt.status }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Input Form -->
-    <div class="kd-composer-box">
-      <textarea
-        #chatInput
-        rows="2"
-        class="kd-chat-textarea"
-        [(ngModel)]="inputText"
-        (input)="onInputChange($event)"
-        (keydown)="onKeyDown($event)"
-        placeholder="Ask SRE Agent anything, or type @ to mention @deployment/..., @pod/..., @service/..."
-        [disabled]="isThinking"
-      ></textarea>
-
-      <div class="kd-composer-actions">
-        <div class="kd-composer-hint">
-          <span>Type <strong>@</strong> for autocomplete (e.g. <code>@deployment/name</code>, <code>@pod/name</code>, <code>@service/name</code>)</span>
-        </div>
-
+      <div class="kd-action-box">
         <button
-          mat-raised-button
-          color="primary"
-          class="kd-send-btn"
-          (click)="sendMessage()"
-          [disabled]="!inputText.trim() || isThinking"
+          *ngIf="turns.length > 0"
+          mat-stroked-button
+          color="warn"
+          (click)="clearChat()"
+          class="kd-new-chat-btn"
         >
-          <mat-icon *ngIf="!isThinking">send</mat-icon>
-          <mat-spinner *ngIf="isThinking" diameter="18" color="accent"></mat-spinner>
-          <span>Send</span>
+          <mat-icon>refresh</mat-icon>
+          <span>New Query</span>
         </button>
       </div>
     </div>
-  </footer>
+  </mat-card>
+
+  <!-- Query / Chat Input Card -->
+  <mat-card class="kd-agent-card kd-input-card">
+    <mat-card-content>
+      <div class="kd-composer-wrapper">
+        <div class="kd-input-row">
+          <mat-form-field appearance="outline" class="kd-query-field">
+            <mat-label>Describe operational issue or type @ to mention resources</mat-label>
+            <textarea
+              #chatInput
+              matInput
+              rows="2"
+              [(ngModel)]="inputText"
+              (input)="onInputChange($event)"
+              (keydown)="onKeyDown($event)"
+              placeholder="e.g. Why is @deployment/pilot-dashboard-api failing? or check latency between @pod/frontend and @pod/backend"
+              [disabled]="isThinking"
+            ></textarea>
+
+            <!-- Autocomplete Mention Dropdown attached to input field -->
+            <div class="kd-mention-popup" *ngIf="showMentionPopup">
+              <div class="kd-mention-header">
+                <mat-icon inline>label</mat-icon>
+                <span>Select resource (↑ ↓ to navigate, Enter or Tab to select)</span>
+              </div>
+              <div class="kd-mention-list">
+                <div
+                  class="kd-mention-item"
+                  *ngFor="let opt of filteredMentionOptions; let i = index"
+                  [class.active]="i === selectedMentionIndex"
+                  (click)="selectMentionOption(opt)"
+                  (mouseenter)="selectedMentionIndex = i"
+                >
+                  <div class="kd-mention-left">
+                    <mat-icon class="kd-opt-icon" [ngClass]="opt.kind">
+                      {{
+                        opt.kind === 'deployment'
+                          ? 'layers'
+                          : opt.kind === 'pod'
+                          ? 'widgets'
+                          : opt.kind === 'service'
+                          ? 'device_hub'
+                          : 'folder'
+                      }}
+                    </mat-icon>
+                    <span class="kd-mention-label">{{ opt.label }}</span>
+                  </div>
+                  <div class="kd-mention-right">
+                    <span class="kd-mention-ns" *ngIf="opt.namespace">{{ opt.namespace }}</span>
+                    <span class="kd-mention-status" *ngIf="opt.status">{{ opt.status }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-form-field>
+
+          <button
+            *ngIf="!isThinking"
+            mat-raised-button
+            color="primary"
+            class="kd-investigate-btn"
+            (click)="sendMessage()"
+            [disabled]="!inputText.trim()"
+          >
+            <mat-icon>send</mat-icon>
+            <span>Investigate</span>
+          </button>
+
+          <button
+            *ngIf="isThinking"
+            mat-raised-button
+            color="warn"
+            class="kd-stop-btn"
+            (click)="stopGeneration()"
+            title="Stop AI generation"
+          >
+            <mat-icon>stop</mat-icon>
+            <span>Stop</span>
+          </button>
+        </div>
+
+        <!-- Quick Prompt Chips -->
+        <div class="kd-sample-prompts">
+          <span class="kd-sample-label">Quick Prompts:</span>
+          <mat-chip-list>
+            <mat-chip
+              *ngFor="let p of quickPrompts"
+              (click)="useQuickPrompt(p.query)"
+              class="kd-prompt-chip"
+            >
+              {{ p.title }}
+            </mat-chip>
+          </mat-chip-list>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Error Card -->
+  <mat-card *ngIf="error" class="kd-error-card">
+    <mat-icon color="warn">error_outline</mat-icon>
+    <div class="kd-error-text">{{ error }}</div>
+  </mat-card>
+
+  <!-- Empty Initial State (when no turns yet) -->
+  <mat-card *ngIf="turns.length === 0 && !isThinking" class="kd-agent-card kd-ready-card">
+    <div class="kd-ready-content">
+      <mat-icon class="kd-ready-icon" color="primary">verified_user</mat-icon>
+      <h3>Ready for Autonomous SRE Investigation</h3>
+      <p>
+        Enter your troubleshooting question above, or type <strong>@</strong> to mention specific
+        <strong>@deployment/name</strong>, <strong>@pod/name</strong>, or <strong>@service/name</strong> resources.
+        The agent inspects live pod container logs, restart events, network latency paths, and FalkorDB graph topology.
+      </p>
+    </div>
+  </mat-card>
+
+  <!-- Conversation & Results Timeline: Unified Single-Block Turns -->
+  <div class="kd-conversation-container" *ngIf="turns.length > 0">
+    <mat-card class="kd-agent-card kd-unified-turn-card" *ngFor="let turn of turns">
+      <!-- Top Query Header Bar within the same card -->
+      <div class="kd-turn-header">
+        <div class="kd-turn-query-lead">
+          <mat-icon class="kd-query-lead-icon">code</mat-icon>
+          <div class="kd-query-text-wrap">
+            <span class="kd-query-text">{{ turn.query }}</span>
+          </div>
+        </div>
+
+        <div class="kd-turn-meta">
+          <span class="kd-exec-badge" [class.running]="turn.isStreaming">
+            <mat-spinner diameter="14" *ngIf="turn.isStreaming"></mat-spinner>
+            <span>{{ turn.isStreaming ? 'Executing...' : (turn.queryTime | date:'mediumTime') }}</span>
+          </span>
+          <button
+            mat-icon-button
+            class="kd-copy-turn-btn"
+            *ngIf="turn.text"
+            (click)="copyToClipboard(turn.text, 'Answer copied')"
+            title="Copy response"
+          >
+            <mat-icon>content_copy</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <!-- Turn Body: Diagnosis, Stream, Trail, Patches -->
+      <div class="kd-turn-body">
+        <!-- Live executing indicator before stream/trail starts -->
+        <div class="kd-executing-indicator" *ngIf="turn.isStreaming && !turn.text && !turn.response?.steps?.length">
+          <mat-spinner diameter="20" color="primary"></mat-spinner>
+          <span>Inspecting live cluster telemetry &amp; topology...</span>
+        </div>
+
+        <!-- Collapsible Investigation Execution Trail -->
+        <div class="kd-steps-collapsible" *ngIf="turn.response?.steps?.length">
+          <div class="kd-steps-toggle" (click)="toggleSteps(turn)">
+            <mat-icon class="kd-toggle-icon">{{ turn.stepsExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+            <mat-icon class="kd-trail-icon">timeline</mat-icon>
+            <span class="kd-steps-label">Investigation Execution Trail</span>
+            <span class="kd-steps-badge">{{ turn.response.steps.length }} automated steps executed</span>
+          </div>
+          <div class="kd-timeline" *ngIf="turn.stepsExpanded">
+            <div class="kd-timeline-item" *ngFor="let s of turn.response.steps; let idx = index">
+              <div class="kd-step-badge">{{ idx + 1 }}</div>
+              <div class="kd-step-body">
+                <div class="kd-step-title">{{ s.description || s.step }}</div>
+                <pre *ngIf="s.output" class="kd-step-output">{{ s.output }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Primary Diagnosis / Markdown Answer -->
+        <div class="kd-answer-body" *ngIf="turn.text">
+          <div class="kd-markdown" [innerHTML]="turn.text | kdMarkdown"></div>
+          <span class="kd-streaming-cursor" *ngIf="turn.isStreaming"></span>
+        </div>
+
+        <!-- Inline Root Cause Alert -->
+        <div *ngIf="turn.response?.rootCause" class="kd-rootcause-inline">
+          <div class="kd-rootcause-header">
+            <mat-icon color="warn">warning</mat-icon>
+            <span>Identified Root Cause &amp; Degraded Condition</span>
+          </div>
+          <div class="kd-markdown kd-rootcause-body" [innerHTML]="turn.response.rootCause | kdMarkdown"></div>
+        </div>
+
+        <!-- Inline Recommended Remediation Commands -->
+        <div *ngIf="turn.response?.commands?.length" class="kd-inline-group">
+          <div class="kd-inline-group-title">
+            <mat-icon>code</mat-icon>
+            <span>Recommended Remediation Commands</span>
+          </div>
+          <div class="kd-command-row" *ngFor="let cmd of turn.response.commands">
+            <code>{{ cmd }}</code>
+            <button mat-icon-button (click)="copyToClipboard(cmd, 'Command copied')" title="Copy command">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Inline Suggested YAML Patch -->
+        <div *ngIf="turn.response?.yamlPatches?.length" class="kd-inline-group">
+          <div class="kd-inline-group-title">
+            <mat-icon>code</mat-icon>
+            <span>Suggested Manifest Fix</span>
+          </div>
+          <div class="kd-patch-block" *ngFor="let patch of turn.response.yamlPatches">
+            <div class="kd-patch-header">
+              <span>Kubernetes Manifest / Diff</span>
+              <button mat-button color="accent" (click)="copyToClipboard(patch, 'YAML patch copied')">
+                <mat-icon>content_copy</mat-icon> Copy YAML
+              </button>
+            </div>
+            <pre class="kd-code-block">{{ patch }}</pre>
+          </div>
+        </div>
+
+        <!-- Human-in-the-Loop: Antigravity-Style Follow-Up Questions -->
+        <div *ngIf="turn.response?.followUps?.length" class="kd-followups-block">
+          <div class="kd-followups-title">
+            <mat-icon color="accent">help_outline</mat-icon>
+            <span>Suggested Follow-Up Steps &amp; Clarifications:</span>
+          </div>
+          <div class="kd-followup-chips">
+            <button
+              *ngFor="let f of turn.response.followUps"
+              mat-stroked-button
+              class="kd-followup-btn"
+              (click)="askFollowUp(f)"
+              [disabled]="isThinking"
+            >
+              <mat-icon>play_arrow</mat-icon>
+              <span>{{ f }}</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </mat-card>
+  </div>
 </div>
+

@@ -161,11 +161,13 @@ type AgentStep struct {
 
 // AgentResponse is the final output from the Autonomous SRE Agent.
 type AgentResponse struct {
-	Query        string      `json:"query"`
-	Steps        []AgentStep `json:"steps"`
-	Summary      string      `json:"summary"`
-	RootCause    string      `json:"rootCause,omitempty"`
-	Commands     []string    `json:"commands,omitempty"`
-	YAMLPatches  []string    `json:"yamlPatches,omitempty"`
-	GraphContext string      `json:"graphContext,omitempty"`
+	Query         string      `json:"query"`
+	Steps         []AgentStep `json:"steps"`
+	Summary       string      `json:"summary"`
+	RootCause     string      `json:"rootCause,omitempty"`
+	Commands      []string    `json:"commands,omitempty"`
+	YAMLPatches   []string    `json:"yamlPatches,omitempty"`
+	FollowUps     []string    `json:"followUps,omitempty"`
+	CypherQueries []string    `json:"cypherQueries,omitempty"`
+	GraphContext  string      `json:"graphContext,omitempty"`
 }

@@ -24,9 +24,6 @@ import {NamespaceService} from '@common/services/global/namespace';
   styleUrls: ['./style.scss'],
 })
 export class AISecurityComponent implements OnInit, OnDestroy {
-  isScanning = false;
-  response: SecurityResponse | null = null;
-  error: string | null = null;
   selectedNamespace = '';
   severityFilter = 'ALL';
   private nsSub_?: Subscription;
@@ -37,11 +34,32 @@ export class AISecurityComponent implements OnInit, OnDestroy {
     private readonly snackBar: MatSnackBar,
   ) {}
 
+  get isScanning(): boolean {
+    return this.aiService.isAnalyzingSecurity;
+  }
+  set isScanning(val: boolean) {
+    this.aiService.isAnalyzingSecurity = val;
+  }
+
+  get response(): SecurityResponse | null {
+    return this.aiService.securityResponse;
+  }
+  set response(val: SecurityResponse | null) {
+    this.aiService.securityResponse = val;
+  }
+
+  get error(): string | null {
+    return this.aiService.securityError;
+  }
+  set error(val: string | null) {
+    this.aiService.securityError = val;
+  }
+
   ngOnInit(): void {
     this.selectedNamespace = this.getActiveNamespace();
     this.nsSub_ = this.namespaceService_.onNamespaceChangeEvent.subscribe(() => {
       this.selectedNamespace = this.getActiveNamespace();
-      if (this.response) {
+      if (this.response && !this.isScanning) {
         this.runScan();
       }
     });
@@ -60,18 +78,10 @@ export class AISecurityComponent implements OnInit, OnDestroy {
   }
 
   runScan(): void {
-    this.isScanning = true;
     this.error = null;
-
     this.aiService.runSecurity(this.selectedNamespace || undefined).subscribe({
-      next: res => {
-        this.response = res;
-        this.isScanning = false;
-      },
-      error: err => {
-        this.error = err.error?.message || 'Security scan failed. Please verify AI Settings and cluster permissions.';
-        this.isScanning = false;
-      },
+      next: () => {},
+      error: () => {},
     });
   }
 

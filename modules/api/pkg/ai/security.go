@@ -298,7 +298,7 @@ spec:
 	}
 
 	// Generate AI summary
-	if settings != nil && settings.APIKey != "" && len(findings) > 0 {
+	if settings != nil && (settings.APIKey != "" || settings.Provider == ProviderOllama) && len(findings) > 0 {
 		adapter, err := NewAdapter(settings)
 		if err == nil {
 			summaryText := buildSecuritySummary(score, findings, targetLabel)

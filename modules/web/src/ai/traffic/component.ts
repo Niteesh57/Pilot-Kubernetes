@@ -14,14 +14,13 @@
 
 import {Component, OnDestroy, OnInit} from '@angular/core';
 import {Router} from '@angular/router';
-import {Subscription} from 'rxjs';
 import {
   AIService,
+  AgentResponse,
   TopologyEdge,
   TopologyGraph,
   TopologyNode,
 } from '@common/services/global/ai.service';
-import {NamespaceService} from '@common/services/global/namespace';
 
 export interface LayoutNode extends TopologyNode {
   x: number;
@@ -52,6 +51,13 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
   selectedGroup = 'ALL';
   selectedNode: TopologyNode | null = null;
 
+  // Inline AI Investigation state (inside drawer)
+  isInvestigating = false;
+  investigationText = '';
+  investigationResult: AgentResponse | null = null;
+  investigationError: string | null = null;
+  private cancelInvestigation_?: () => void;
+
   // Zoom and Pan
   zoomScale = 1.0;
   panX = 40;
@@ -66,34 +72,17 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
   svgWidth = 1400;
   svgHeight = 800;
 
-  private nsSub_?: Subscription;
-
   constructor(
     private readonly aiService: AIService,
-    private readonly namespaceService_: NamespaceService,
     private readonly router: Router,
   ) {}
 
   ngOnInit(): void {
-    this.selectedNamespace = this.getActiveNamespace();
     this.refresh();
-
-    this.nsSub_ = this.namespaceService_.onNamespaceChangeEvent.subscribe(() => {
-      this.selectedNamespace = this.getActiveNamespace();
-      this.refresh();
-    });
   }
 
   ngOnDestroy(): void {
-    this.nsSub_?.unsubscribe();
-  }
-
-  getActiveNamespace(): string {
-    const ns = this.namespaceService_.current();
-    if (!ns || ns === '_all' || this.namespaceService_.areMultipleNamespacesSelected()) {
-      return '';
-    }
-    return ns;
+    this.stopInvestigation();
   }
 
   refresh(): void {
@@ -101,7 +90,8 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
     this.error = null;
     this.selectedNode = null;
 
-    this.aiService.getTopology(this.selectedNamespace || undefined).subscribe({
+    // Discover universal cluster-wide topology independent of active namespace selection
+    this.aiService.getTopology().subscribe({
       next: graph => {
         this.graph = graph;
         this.isLoading = false;
@@ -302,19 +292,84 @@ export class TrafficTopologyComponent implements OnInit, OnDestroy {
   }
 
   selectNode(node: TopologyNode): void {
-    this.selectedNode = node;
+    if (this.selectedNode?.id !== node.id) {
+      this.stopInvestigation();
+      this.selectedNode = node;
+      this.investigationText = '';
+      this.investigationResult = null;
+      this.investigationError = null;
+    }
   }
 
   closeDrawer(): void {
+    this.stopInvestigation();
     this.selectedNode = null;
+    this.investigationText = '';
+    this.investigationResult = null;
+    this.investigationError = null;
+  }
+
+  getResourceHref(node: TopologyNode | null): string[] {
+    if (!node || !node.name) return [];
+    let kind = (node.kind || '').toLowerCase();
+    if (kind === 'pvc') kind = 'persistentvolumeclaim';
+    if (kind === 'sa') kind = 'serviceaccount';
+
+    if (kind === 'node' || kind === 'persistentvolume' || kind === 'namespace') {
+      return ['/', kind, node.name];
+    }
+    if (node.namespace) {
+      return ['/', kind, node.namespace, node.name];
+    }
+    return ['/', kind, node.name];
   }
 
   runRCA(node: TopologyNode): void {
-    this.router.navigate(['/ai/agent'], {
-      queryParams: {
-        query: `Investigate health, logs, and events for ${node.kind} ${node.name} in namespace ${node.namespace}`,
+    if (this.isInvestigating) {
+      this.stopInvestigation();
+      return;
+    }
+
+    this.isInvestigating = true;
+    this.investigationText = '';
+    this.investigationResult = null;
+    this.investigationError = null;
+
+    const query = `Investigate health, container logs, error events, and latency for @${node.kind.toLowerCase()}/${node.name}${node.namespace ? ' in namespace ' + node.namespace : ''}`;
+
+    this.cancelInvestigation_ = this.aiService.runAgentStream(
+      {
+        namespace: node.namespace || undefined,
+        query,
       },
-    });
+      // onStep
+      () => {},
+      // onToken
+      (token: string) => {
+        this.investigationText += token;
+      },
+      // onComplete
+      (resp: AgentResponse) => {
+        this.isInvestigating = false;
+        this.investigationResult = resp;
+        if (!this.investigationText || this.investigationText.trim().startsWith('{')) {
+          this.investigationText = resp.summary;
+        }
+      },
+      // onError
+      (err: any) => {
+        this.isInvestigating = false;
+        this.investigationError = err?.message || String(err) || 'Investigation failed';
+      },
+    );
+  }
+
+  stopInvestigation(): void {
+    if (this.cancelInvestigation_) {
+      this.cancelInvestigation_();
+      this.cancelInvestigation_ = undefined;
+    }
+    this.isInvestigating = false;
   }
 
   getStatusClass(status: string): string {

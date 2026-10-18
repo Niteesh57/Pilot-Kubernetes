@@ -277,7 +277,7 @@ func parseRows(result interface{}) ([]string, [][]interface{}, error) {
 	header := []string{}
 	if h, ok := arr[0].([]interface{}); ok {
 		for _, col := range h {
-			header = append(header, asString(col, 0))
+			header = append(header, asString(col))
 		}
 	}
 
@@ -297,10 +297,67 @@ func parseRows(result interface{}) ([]string, [][]interface{}, error) {
 	return header, nil, nil
 }
 
+// unwrapValue recursively unwraps FalkorDB RESP compact protocol tagged pairs [tag, value].
+// In FalkorDB compact mode, a scalar is represented as [type_tag, value].
+func unwrapValue(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	arr, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	if len(arr) == 2 {
+		switch arr[0].(type) {
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+			tag := asInt64(arr[0])
+			if tag == 1 { // Tag 1: NULL
+				return nil
+			}
+			return unwrapValue(arr[1])
+		}
+	}
+	return v
+}
+
+func cellToString(v interface{}) string {
+	v = unwrapValue(v)
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int:
+		return strconv.Itoa(t)
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(t)
+	case []interface{}:
+		var parts []string
+		for _, item := range t {
+			s := cellToString(item)
+			if s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
 func asInt64(v interface{}) int64 {
+	v = unwrapValue(v)
 	switch t := v.(type) {
 	case int64:
 		return t
+	case int:
+		return int64(t)
 	case float64:
 		return int64(t)
 	case string:
@@ -311,36 +368,36 @@ func asInt64(v interface{}) int64 {
 	}
 }
 
-func asString(v interface{}, _ int) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case []byte:
-		return string(t)
-	case int64:
-		return strconv.FormatInt(t, 10)
-	case float64:
-		return strconv.FormatFloat(t, 'f', -1, 64)
-	case bool:
-		return strconv.FormatBool(t)
-	default:
-		return fmt.Sprintf("%v", t)
+func asString(v interface{}, idx ...int) string {
+	if len(idx) > 0 {
+		colIdx := idx[0]
+		if row, ok := v.([]interface{}); ok {
+			if colIdx >= 0 && colIdx < len(row) {
+				return cellToString(row[colIdx])
+			}
+			return ""
+		}
 	}
+	return cellToString(v)
 }
 
 func asStringSlice(v interface{}) []string {
+	v = unwrapValue(v)
 	var out []string
 	switch t := v.(type) {
 	case []interface{}:
 		for _, e := range t {
-			out = append(out, asString(e, 0))
+			s := cellToString(e)
+			if s != "" {
+				out = append(out, s)
+			}
 		}
 	case []string:
 		out = append(out, t...)
 	case string:
-		out = append(out, t)
+		if t != "" {
+			out = append(out, t)
+		}
 	}
 	return out
 }

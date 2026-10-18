@@ -29,13 +29,9 @@ limitations under the License.
       </div>
 
       <div class="kd-action-box">
-        <div class="kd-scope-badge">
-          <mat-icon>public</mat-icon>
-          <span>Scope: <strong>Entire Cluster</strong></span>
-        </div>
 
         <button mat-raised-button color="primary" (click)="runAudit()" [disabled]="isAuditing">
-          <mat-icon *ngIf="!isAuditing">auto_fix_high</mat-icon>
+          <mat-icon *ngIf="!isAuditing">build</mat-icon>
           <mat-spinner *ngIf="isAuditing" diameter="20" color="accent"></mat-spinner>
           <span *ngIf="!isAuditing">{{ response ? 'Re-audit Cluster' : 'Run Reliability Audit' }}</span>
           <span *ngIf="isAuditing">Auditing...</span>
@@ -53,7 +49,7 @@ limitations under the License.
   <!-- Ready to Audit Initial State -->
   <mat-card *ngIf="!response && !isAuditing && !error" class="kd-improve-card kd-ready-card">
     <div class="kd-ready-content">
-      <mat-icon class="kd-ready-icon" color="primary">health_and_safety</mat-icon>
+      <mat-icon class="kd-ready-icon" color="primary">verified_user</mat-icon>
       <h3>Ready to Audit Reliability &amp; Hygiene</h3>
       <p>
         Click <strong>Run Reliability Audit</strong> to evaluate CPU/memory resource limits, liveness and readiness probes,
@@ -69,7 +65,7 @@ limitations under the License.
   <!-- AI Summary -->
   <mat-card *ngIf="response?.aiSummary" class="kd-improve-card kd-summary-card">
     <mat-card-header>
-      <mat-icon mat-card-avatar color="primary">insights</mat-icon>
+      <mat-icon mat-card-avatar color="primary">assessment</mat-icon>
       <mat-card-title>AI Reliability &amp; Optimization Assessment</mat-card-title>
     </mat-card-header>
     <mat-card-content>

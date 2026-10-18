@@ -15,6 +15,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -34,9 +35,13 @@ var defaultBaseURLs = map[ProviderKind]string{
 	ProviderOllama:    "http://localhost:11434/v1",
 }
 
+// StreamCallback is invoked whenever a token chunk arrives from the AI provider.
+type StreamCallback func(chunk string)
+
 // ProviderAdapter is a universal interface for all AI providers.
 type ProviderAdapter interface {
 	Chat(ctx context.Context, systemPrompt, userPrompt string) (string, error)
+	ChatStream(ctx context.Context, systemPrompt, userPrompt string, onChunk StreamCallback) (string, error)
 	ListModels(ctx context.Context) ([]string, error)
 	Ping(ctx context.Context) (int64, error) // returns latency ms
 }
@@ -111,9 +116,10 @@ type openAIAdapter struct {
 }
 
 type openAIChatRequest struct {
-	Model    string              `json:"model"`
-	Messages []openAIMessage     `json:"messages"`
-	MaxTokens int                `json:"max_tokens"`
+	Model     string          `json:"model"`
+	Messages  []openAIMessage `json:"messages"`
+	MaxTokens int             `json:"max_tokens"`
+	Stream    bool            `json:"stream,omitempty"`
 }
 type openAIMessage struct {
 	Role    string `json:"role"`
@@ -135,11 +141,29 @@ type openAIModelsResponse struct {
 	} `json:"data"`
 }
 
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
 func (a *openAIAdapter) Chat(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	return a.ChatStream(ctx, systemPrompt, userPrompt, nil)
+}
+
+func (a *openAIAdapter) ChatStream(ctx context.Context, systemPrompt, userPrompt string, onChunk StreamCallback) (string, error) {
 	model := a.model
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
+
+	stream := onChunk != nil
 	reqBody, _ := json.Marshal(openAIChatRequest{
 		Model: model,
 		Messages: []openAIMessage{
@@ -147,33 +171,86 @@ func (a *openAIAdapter) Chat(ctx context.Context, systemPrompt, userPrompt strin
 			{Role: "user", Content: userPrompt},
 		},
 		MaxTokens: 2048,
+		Stream:    stream,
 	})
-	req, _ := http.NewRequestWithContext(ctx, "POST", a.baseURL+"/chat/completions", bytes.NewReader(reqBody))
+
+	url := strings.TrimRight(a.baseURL, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if a.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	}
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var r openAIChatResponse
-	if err := json.Unmarshal(body, &r); err != nil {
-		return "", fmt.Errorf("parse error: %s", string(body))
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		var r openAIChatResponse
+		if err := json.Unmarshal(body, &r); err == nil && r.Error != nil && r.Error.Message != "" {
+			return "", fmt.Errorf("provider error (%d): %s", resp.StatusCode, r.Error.Message)
+		}
+		return "", fmt.Errorf("provider error (%d): %s", resp.StatusCode, string(body))
 	}
-	if r.Error != nil {
-		return "", fmt.Errorf("provider error: %s", r.Error.Message)
+
+	if !stream {
+		body, _ := io.ReadAll(resp.Body)
+		var r openAIChatResponse
+		if err := json.Unmarshal(body, &r); err != nil {
+			return "", fmt.Errorf("parse error: %s", string(body))
+		}
+		if r.Error != nil {
+			return "", fmt.Errorf("provider error: %s", r.Error.Message)
+		}
+		if len(r.Choices) == 0 {
+			return "", fmt.Errorf("no response from provider")
+		}
+		return r.Choices[0].Message.Content, nil
 	}
-	if len(r.Choices) == 0 {
-		return "", fmt.Errorf("no response from provider")
+
+	scanner := bufio.NewScanner(resp.Body)
+	var fullText strings.Builder
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err == nil {
+			if chunk.Error != nil {
+				return fullText.String(), fmt.Errorf("stream error: %s", chunk.Error.Message)
+			}
+			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+				token := chunk.Choices[0].Delta.Content
+				fullText.WriteString(token)
+				if onChunk != nil {
+					onChunk(token)
+				}
+			}
+		}
 	}
-	return r.Choices[0].Message.Content, nil
+	return fullText.String(), scanner.Err()
 }
 
 func (a *openAIAdapter) ListModels(ctx context.Context) ([]string, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET", a.baseURL+"/models", nil)
+	url := strings.TrimRight(a.baseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
 	if a.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	}
@@ -206,7 +283,11 @@ func (a *openAIAdapter) Ping(ctx context.Context) (int64, error) {
 		},
 		MaxTokens: 1,
 	})
-	req, _ := http.NewRequestWithContext(ctx, "POST", a.baseURL+"/chat/completions", bytes.NewReader(reqBody))
+	url := strings.TrimRight(a.baseURL, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if a.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
@@ -263,6 +344,10 @@ type geminiModelsResponse struct {
 }
 
 func (a *geminiAdapter) Chat(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	return a.ChatStream(ctx, systemPrompt, userPrompt, nil)
+}
+
+func (a *geminiAdapter) ChatStream(ctx context.Context, systemPrompt, userPrompt string, onChunk StreamCallback) (string, error) {
 	model := a.model
 	if model == "" {
 		model = "gemini-1.5-flash"
@@ -272,30 +357,73 @@ func (a *geminiAdapter) Chat(ctx context.Context, systemPrompt, userPrompt strin
 			{Role: "user", Parts: []geminiPart{{Text: systemPrompt + "\n\n" + userPrompt}}},
 		},
 	})
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", a.baseURL, model, a.apiKey)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+
+	if onChunk == nil {
+		url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", strings.TrimRight(a.baseURL, "/"), model, a.apiKey)
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		var r geminiResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			return "", err
+		}
+		if r.Error != nil {
+			return "", fmt.Errorf("gemini error: %s", r.Error.Message)
+		}
+		if len(r.Candidates) == 0 || len(r.Candidates[0].Content.Parts) == 0 {
+			return "", fmt.Errorf("no response from Gemini")
+		}
+		return r.Candidates[0].Content.Parts[0].Text, nil
+	}
+
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s", strings.TrimRight(a.baseURL, "/"), model, a.apiKey)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	var r geminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
+
+	scanner := bufio.NewScanner(resp.Body)
+	var fullText strings.Builder
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		var r geminiResponse
+		if err := json.Unmarshal([]byte(data), &r); err == nil {
+			if len(r.Candidates) > 0 && len(r.Candidates[0].Content.Parts) > 0 {
+				token := r.Candidates[0].Content.Parts[0].Text
+				fullText.WriteString(token)
+				onChunk(token)
+			}
+		}
 	}
-	if r.Error != nil {
-		return "", fmt.Errorf("gemini error: %s", r.Error.Message)
+	if fullText.Len() == 0 {
+		return a.Chat(ctx, systemPrompt, userPrompt)
 	}
-	if len(r.Candidates) == 0 || len(r.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("no response from Gemini")
-	}
-	return r.Candidates[0].Content.Parts[0].Text, nil
+	return fullText.String(), nil
 }
 
 func (a *geminiAdapter) ListModels(ctx context.Context) ([]string, error) {
-	url := fmt.Sprintf("%s/models?key=%s", a.baseURL, a.apiKey)
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	url := fmt.Sprintf("%s/models?key=%s", strings.TrimRight(a.baseURL, "/"), a.apiKey)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -307,7 +435,6 @@ func (a *geminiAdapter) ListModels(ctx context.Context) ([]string, error) {
 	}
 	names := make([]string, 0, len(r.Models))
 	for _, m := range r.Models {
-		// strip prefix "models/"
 		name := strings.TrimPrefix(m.Name, "models/")
 		names = append(names, name)
 	}
@@ -325,8 +452,11 @@ func (a *geminiAdapter) Ping(ctx context.Context) (int64, error) {
 			{Role: "user", Parts: []geminiPart{{Text: "ping"}}},
 		},
 	})
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", a.baseURL, model, a.apiKey)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", strings.TrimRight(a.baseURL, "/"), model, a.apiKey)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -352,6 +482,7 @@ type anthropicRequest struct {
 	MaxTokens int                `json:"max_tokens"`
 	System    string             `json:"system"`
 	Messages  []anthropicMessage `json:"messages"`
+	Stream    bool               `json:"stream,omitempty"`
 }
 type anthropicMessage struct {
 	Role    string `json:"role"`
@@ -366,11 +497,27 @@ type anthropicResponse struct {
 	} `json:"error,omitempty"`
 }
 
+type anthropicStreamChunk struct {
+	Type  string `json:"type"`
+	Delta struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"delta"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
 func (a *anthropicAdapter) Chat(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	return a.ChatStream(ctx, systemPrompt, userPrompt, nil)
+}
+
+func (a *anthropicAdapter) ChatStream(ctx context.Context, systemPrompt, userPrompt string, onChunk StreamCallback) (string, error) {
 	model := a.model
 	if model == "" {
 		model = "claude-3-5-sonnet-20241022"
 	}
+	stream := onChunk != nil
 	reqBody, _ := json.Marshal(anthropicRequest{
 		Model:     model,
 		MaxTokens: 2048,
@@ -378,8 +525,13 @@ func (a *anthropicAdapter) Chat(ctx context.Context, systemPrompt, userPrompt st
 		Messages: []anthropicMessage{
 			{Role: "user", Content: userPrompt},
 		},
+		Stream: stream,
 	})
-	req, _ := http.NewRequestWithContext(ctx, "POST", a.baseURL+"/messages", bytes.NewReader(reqBody))
+	url := strings.TrimRight(a.baseURL, "/") + "/messages"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", a.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
@@ -388,21 +540,51 @@ func (a *anthropicAdapter) Chat(ctx context.Context, systemPrompt, userPrompt st
 		return "", err
 	}
 	defer resp.Body.Close()
-	var r anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		var r anthropicResponse
+		if err := json.Unmarshal(b, &r); err == nil && r.Error != nil && r.Error.Message != "" {
+			return "", fmt.Errorf("anthropic error (%d): %s", resp.StatusCode, r.Error.Message)
+		}
+		return "", fmt.Errorf("anthropic error (%d): %s", resp.StatusCode, string(b))
 	}
-	if r.Error != nil {
-		return "", fmt.Errorf("anthropic error: %s", r.Error.Message)
+
+	if !stream {
+		var r anthropicResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			return "", err
+		}
+		if r.Error != nil {
+			return "", fmt.Errorf("anthropic error: %s", r.Error.Message)
+		}
+		if len(r.Content) == 0 {
+			return "", fmt.Errorf("no response from Anthropic")
+		}
+		return r.Content[0].Text, nil
 	}
-	if len(r.Content) == 0 {
-		return "", fmt.Errorf("no response from Anthropic")
+
+	scanner := bufio.NewScanner(resp.Body)
+	var fullText strings.Builder
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		var chunk anthropicStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err == nil {
+			if chunk.Type == "content_block_delta" && chunk.Delta.Text != "" {
+				token := chunk.Delta.Text
+				fullText.WriteString(token)
+				onChunk(token)
+			}
+		}
 	}
-	return r.Content[0].Text, nil
+	return fullText.String(), nil
 }
 
 func (a *anthropicAdapter) ListModels(ctx context.Context) ([]string, error) {
-	// Anthropic does not have a public models list endpoint; return known models.
 	return []string{
 		"claude-3-5-sonnet-20241022",
 		"claude-3-5-haiku-20241022",
@@ -424,7 +606,11 @@ func (a *anthropicAdapter) Ping(ctx context.Context) (int64, error) {
 		System:    "You are a test agent.",
 		Messages:  []anthropicMessage{{Role: "user", Content: "ping"}},
 	})
-	req, _ := http.NewRequestWithContext(ctx, "POST", a.baseURL+"/messages", bytes.NewReader(reqBody))
+	url := strings.TrimRight(a.baseURL, "/") + "/messages"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", a.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")

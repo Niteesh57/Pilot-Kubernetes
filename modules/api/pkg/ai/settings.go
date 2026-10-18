@@ -18,7 +18,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
+	"sync"
 
 	"k8s.io/klog/v2"
 
@@ -30,63 +33,145 @@ import (
 
 const aiSecretName = "kubepilot-ai-settings"
 
-var aiSecretNamespace = args.Namespace()
+var (
+	cachedSettingsMu sync.RWMutex
+	cachedSettings   *AISettings
+)
+
+// getAISecretNamespace returns the namespace where the settings secret is stored.
+func getAISecretNamespace() string {
+	if ns := args.Namespace(); ns != "" {
+		return ns
+	}
+	if env := os.Getenv("POD_NAMESPACE"); env != "" {
+		return env
+	}
+	return "kubernetes-dashboard"
+}
 
 // defaultAISettings returns safe, minimal defaults.
 func defaultAISettings() *AISettings {
-	namespace := args.Namespace()
+	ns := getAISecretNamespace()
 	return &AISettings{
 		Provider:          ProviderOpenAI,
 		BaseURL:           "https://api.openai.com/v1",
 		Model:             "gpt-4o-mini",
 		MaxTokens:         2048,
 		Temperature:       0.3,
-		FalkorDBAddr:      fmt.Sprintf("falkordb.%s.svc.cluster.local:6379", namespace),
+		FalkorDBAddr:      fmt.Sprintf("falkordb.%s.svc.cluster.local:6379", ns),
 		FalkorDBGraphName: "kubepilot",
 	}
 }
 
-// LoadAISettings loads AI settings from the cluster Secret (falls back to defaults).
+// LoadAISettings loads AI settings from the cluster Secret or in-memory cache / env vars.
 func LoadAISettings(client kubernetes.Interface) *AISettings {
-	secret, err := client.CoreV1().Secrets(aiSecretNamespace).Get(
-		context.Background(), aiSecretName, metav1.GetOptions{},
-	)
-	if err != nil {
-		klog.V(3).InfoS("AI settings secret not found, using defaults", "error", err)
-		return defaultAISettings()
+	cachedSettingsMu.RLock()
+	var inMemoryCopy *AISettings
+	if cachedSettings != nil {
+		c := *cachedSettings
+		inMemoryCopy = &c
 	}
+	cachedSettingsMu.RUnlock()
 
 	settings := defaultAISettings()
-	if data, ok := secret.Data["settings.json"]; ok {
-		if err := json.Unmarshal(data, settings); err != nil {
-			klog.ErrorS(err, "Failed to parse AI settings secret")
+
+	// Candidate namespaces to check for the secret
+	candidateNamespaces := []string{getAISecretNamespace(), "kubernetes-dashboard", "default", "kube-system"}
+	seen := make(map[string]bool)
+	var foundSecret *corev1.Secret
+
+	if client != nil {
+		for _, ns := range candidateNamespaces {
+			if ns == "" || seen[ns] {
+				continue
+			}
+			seen[ns] = true
+			s, err := client.CoreV1().Secrets(ns).Get(context.Background(), aiSecretName, metav1.GetOptions{})
+			if err == nil && s != nil {
+				foundSecret = s
+				break
+			}
 		}
 	}
+
+	if foundSecret != nil {
+		if data, ok := foundSecret.Data["settings.json"]; ok {
+			if err := json.Unmarshal(data, settings); err != nil {
+				klog.ErrorS(err, "Failed to parse AI settings secret")
+			}
+		}
+	} else if inMemoryCopy != nil {
+		settings = inMemoryCopy
+	}
+
 	settings.APIKey = cleanAPIKey(settings.APIKey)
+
+	// If API key is still missing, fallback to inMemoryCopy if available
+	if settings.APIKey == "" && inMemoryCopy != nil && inMemoryCopy.APIKey != "" {
+		settings.APIKey = inMemoryCopy.APIKey
+	}
+
+	// Environment variable fallback
+	if settings.APIKey == "" {
+		switch settings.Provider {
+		case ProviderOpenAI:
+			if k := os.Getenv("OPENAI_API_KEY"); k != "" {
+				settings.APIKey = cleanAPIKey(k)
+			}
+		case ProviderGemini:
+			if k := os.Getenv("GEMINI_API_KEY"); k != "" {
+				settings.APIKey = cleanAPIKey(k)
+			}
+		case ProviderAnthropic:
+			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+				settings.APIKey = cleanAPIKey(k)
+			}
+		}
+		if settings.APIKey == "" {
+			if k := os.Getenv("AI_API_KEY"); k != "" {
+				settings.APIKey = cleanAPIKey(k)
+			}
+		}
+	}
+
 	return settings
 }
 
-// cleanAPIKey strips any env variable prefix (e.g. NVIDIA_API_KEY= or GROQ_API_KEY=) and quotes.
+var envPrefixRegex = regexp.MustCompile(`^[A-Za-z0-9_]+=\s*(.*)$`)
+
+// cleanAPIKey strips any leading env variable name prefix (e.g. OPENAI_API_KEY=xxx) and surrounding quotes.
 func cleanAPIKey(key string) string {
 	key = strings.TrimSpace(key)
-	if idx := strings.Index(key, "="); idx != -1 {
-		key = strings.TrimSpace(key[idx+1:])
+	if m := envPrefixRegex.FindStringSubmatch(key); len(m) > 1 {
+		key = strings.TrimSpace(m[1])
 	}
 	return strings.Trim(key, `"' `)
 }
 
-// SaveAISettings persists AI settings to the cluster Secret.
+// SaveAISettings persists AI settings to in-memory cache and to the cluster Secret.
 func SaveAISettings(client kubernetes.Interface, settings *AISettings) error {
 	settings.APIKey = cleanAPIKey(settings.APIKey)
+
+	// Update in-memory cache immediately
+	cachedSettingsMu.Lock()
+	c := *settings
+	cachedSettings = &c
+	cachedSettingsMu.Unlock()
+
+	if client == nil {
+		return nil
+	}
+
 	data, err := json.Marshal(settings)
 	if err != nil {
 		return err
 	}
 
+	targetNs := getAISecretNamespace()
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      aiSecretName,
-			Namespace: aiSecretNamespace,
+			Namespace: targetNs,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "kubepilot",
 			},
@@ -97,11 +182,11 @@ func SaveAISettings(client kubernetes.Interface, settings *AISettings) error {
 	}
 
 	// Try update first, then create.
-	_, err = client.CoreV1().Secrets(aiSecretNamespace).Update(
+	_, err = client.CoreV1().Secrets(targetNs).Update(
 		context.Background(), secret, metav1.UpdateOptions{},
 	)
 	if err != nil {
-		_, err = client.CoreV1().Secrets(aiSecretNamespace).Create(
+		_, err = client.CoreV1().Secrets(targetNs).Create(
 			context.Background(), secret, metav1.CreateOptions{},
 		)
 	}

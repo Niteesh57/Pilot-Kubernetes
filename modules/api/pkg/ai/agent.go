@@ -24,16 +24,32 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 )
 
-const agentSystemPrompt = `You are an expert autonomous Kubernetes SRE agent.
-You have access to live cluster information, pod logs, events, inter-service network topology, and targeted resource mentions provided to you.
-Your goal is to answer the engineer's question or solve the operational problem thoroughly and concisely.
+const agentSystemPrompt = `You are an expert autonomous Kubernetes SRE agent in Kubernetes Dashboard.
+You have access to live cluster information, container images, pod logs, events, inter-service network topology, and FalkorDB knowledge graph topology.
+Your goal is to answer the engineer's question or solve the operational problem thoroughly, accurately, and concisely.
+
+FalkorDB Graph Schema:
+- Nodes: (:Pod {name, namespace, status, ip}), (:Service {name, namespace, clusterIP}), (:Deployment {name, namespace, replicas}), (:Node {name}), (:Namespace {name})
+- Edges: (:Pod)-[:RUNS_ON]->(:Node), (:Service)-[:ROUTES_TO]->(:Pod), (:Deployment)-[:MANAGES]->(:Pod), (:Pod)-[:COMMUNICATES_WITH]->(:Service)
+
+Guidelines:
+- When asked what a component is used for, explain its architectural role in production, how it integrates with the cluster and Kubernetes Dashboard, its key functions, container specs, and its current health.
+- When diagnosing an issue, identify the specific root cause (e.g. OOMKilled, failing health probe, selector mismatch, network policy block, latency hop) and provide exact remediation steps.
+- If the workload is healthy and the question is informational, directly answer the question in rich Markdown.
+- Provide useful kubectl commands and Cypher queries when relevant.
+- Suggest 2-4 interactive follow-up questions or actions that an SRE engineer might want to ask or execute next (like in Antigravity).
+- Keep responses clean, professional, and well-structured without dumping raw graph arrays or internal structures.
+
 Structure your response as JSON with these fields:
-- summary: Clear 2-4 sentence diagnostic answer to the question in rich Markdown.
-- rootCause: If applicable, the specific technical root cause (e.g. OOMKilled, failing health probe, selector mismatch, network policy block, latency hop).
-- commands: Array of exact kubectl commands to investigate further or fix the issue.
-- yamlPatches: Array of YAML patch strings for any necessary resource changes.
+- summary: Clear, insightful answer to the engineer's query in rich Markdown.
+- rootCause: If diagnosing a failure or degraded condition, the specific technical root cause. If healthy or informational, leave empty.
+- commands: Array of useful kubectl commands relevant to the resource.
+- yamlPatches: Array of YAML patch strings if fixes are recommended.
+- cypherQueries: Array of Cypher query strings to inspect topology or blast radius in FalkorDB (e.g. "MATCH (p:Pod {name: '...'})<-[:ROUTES_TO]-(s:Service) RETURN s").
+- followUps: Array of 2-4 interactive follow-up questions or remediation confirmations for the engineer.
 Return ONLY valid JSON, no other text.`
 
 // MentionTarget represents a Kubernetes resource mentioned with @kind/name in the chat query.
@@ -41,6 +57,23 @@ type MentionTarget struct {
 	Kind      string // "deployment", "pod", "service"
 	Name      string
 	Namespace string
+}
+
+// WorkloadTelemetry captures structured operational metadata for target resources.
+type WorkloadTelemetry struct {
+	Target        MentionTarget
+	Found         bool
+	Kind          string
+	Name          string
+	Namespace     string
+	Image         string
+	Ports         []string
+	ReplicasDesc  string
+	ReadyReplicas int32
+	Desired       int32
+	Conditions    []string
+	ChildPods     []string
+	RootCauseHint string
 }
 
 // mentionRegex matches @deployment/name, @pod/name, @service/name, @svc/name (or @kind:name or with optional namespace)
@@ -136,21 +169,24 @@ func GetResourcesForAutocomplete(ctx context.Context, k8sClient kubernetes.Inter
 	return resp
 }
 
-func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface, target MentionTarget, defaultNamespace string) (string, []string, string) {
+func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface, target *MentionTarget, defaultNamespace string) (string, []string, string, WorkloadTelemetry) {
 	var sb strings.Builder
 	var commands []string
 	rootCauseHint := ""
+	info := WorkloadTelemetry{
+		Target: *target,
+		Kind:   strings.Title(target.Kind),
+		Name:   target.Name,
+	}
 
 	ns := target.Namespace
 	if ns == "" {
 		ns = defaultNamespace
 	}
-	if ns == "" {
-		ns = "default"
-	}
 
 	switch target.Kind {
 	case "deployment":
+		info.Kind = "Deployment"
 		dep, err := k8sClient.AppsV1().Deployments(ns).Get(ctx, target.Name, metav1.GetOptions{})
 		if err != nil {
 			if allDeps, listErr := k8sClient.AppsV1().Deployments("").List(ctx, metav1.ListOptions{}); listErr == nil {
@@ -158,6 +194,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 					if d.Name == target.Name {
 						dep = &d
 						ns = d.Namespace
+						target.Namespace = d.Namespace
 						err = nil
 						break
 					}
@@ -167,13 +204,28 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 		if err != nil {
 			sb.WriteString(fmt.Sprintf("=== TARGET DEPLOYMENT: %s (Namespace: %s) ===\nStatus: NotFound (%v)\n", target.Name, ns, err))
 			commands = append(commands, fmt.Sprintf("kubectl get deployments -A | grep %s", target.Name))
-			return sb.String(), commands, ""
+			return sb.String(), commands, "", info
 		}
 
+		info.Found = true
+		info.Namespace = dep.Namespace
+		target.Namespace = dep.Namespace
 		desired := int32(1)
 		if dep.Spec.Replicas != nil {
 			desired = *dep.Spec.Replicas
 		}
+		info.Desired = desired
+		info.ReadyReplicas = dep.Status.ReadyReplicas
+		info.ReplicasDesc = fmt.Sprintf("%d/%d ready", dep.Status.ReadyReplicas, desired)
+		if len(dep.Spec.Template.Spec.Containers) > 0 {
+			info.Image = dep.Spec.Template.Spec.Containers[0].Image
+			for _, c := range dep.Spec.Template.Spec.Containers {
+				for _, p := range c.Ports {
+					info.Ports = append(info.Ports, fmt.Sprintf("%d/%s", p.ContainerPort, p.Protocol))
+				}
+			}
+		}
+
 		sb.WriteString(fmt.Sprintf("=== TARGET DEPLOYMENT: %s (Namespace: %s) ===\n", dep.Name, dep.Namespace))
 		sb.WriteString(fmt.Sprintf("Replicas: %d desired, %d ready, %d available, %d updated\n",
 			desired, dep.Status.ReadyReplicas, dep.Status.AvailableReplicas, dep.Status.UpdatedReplicas))
@@ -184,6 +236,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 
 		for _, c := range dep.Status.Conditions {
 			sb.WriteString(fmt.Sprintf("Condition [%s]: Status=%s, Reason=%s, Message=%s\n", c.Type, c.Status, c.Reason, c.Message))
+			info.Conditions = append(info.Conditions, fmt.Sprintf("%s=%s", c.Type, c.Status))
 		}
 
 		// List child pods
@@ -202,6 +255,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 								waiting = cs.State.Waiting.Reason
 							}
 						}
+						info.ChildPods = append(info.ChildPods, fmt.Sprintf("%s (%s, restarts: %d)", p.Name, p.Status.Phase, restarts))
 						sb.WriteString(fmt.Sprintf("  - %s (Phase: %s, Restarts: %d, Node: %s, Waiting: %s)\n",
 							p.Name, p.Status.Phase, restarts, p.Spec.NodeName, waiting))
 					}
@@ -215,6 +269,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 		)
 
 	case "pod":
+		info.Kind = "Pod"
 		pod, err := k8sClient.CoreV1().Pods(ns).Get(ctx, target.Name, metav1.GetOptions{})
 		if err != nil {
 			if allPods, listErr := k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{}); listErr == nil {
@@ -222,6 +277,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 					if p.Name == target.Name {
 						pod = &p
 						ns = p.Namespace
+						target.Namespace = p.Namespace
 						err = nil
 						break
 					}
@@ -231,7 +287,20 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 		if err != nil {
 			sb.WriteString(fmt.Sprintf("=== TARGET POD: %s (Namespace: %s) ===\nStatus: NotFound (%v)\n", target.Name, ns, err))
 			commands = append(commands, fmt.Sprintf("kubectl get pods -A | grep %s", target.Name))
-			return sb.String(), commands, ""
+			return sb.String(), commands, "", info
+		}
+
+		info.Found = true
+		info.Namespace = pod.Namespace
+		target.Namespace = pod.Namespace
+		info.ReplicasDesc = string(pod.Status.Phase)
+		if len(pod.Spec.Containers) > 0 {
+			info.Image = pod.Spec.Containers[0].Image
+			for _, c := range pod.Spec.Containers {
+				for _, p := range c.Ports {
+					info.Ports = append(info.Ports, fmt.Sprintf("%d/%s", p.ContainerPort, p.Protocol))
+				}
+			}
 		}
 
 		sb.WriteString(fmt.Sprintf("=== TARGET POD: %s (Namespace: %s, Node: %s, IP: %s) ===\n",
@@ -289,6 +358,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 		)
 
 	case "service":
+		info.Kind = "Service"
 		svc, err := k8sClient.CoreV1().Services(ns).Get(ctx, target.Name, metav1.GetOptions{})
 		if err != nil {
 			if allSvcs, listErr := k8sClient.CoreV1().Services("").List(ctx, metav1.ListOptions{}); listErr == nil {
@@ -296,6 +366,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 					if s.Name == target.Name {
 						svc = &s
 						ns = s.Namespace
+						target.Namespace = s.Namespace
 						err = nil
 						break
 					}
@@ -305,13 +376,18 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 		if err != nil {
 			sb.WriteString(fmt.Sprintf("=== TARGET SERVICE: %s (Namespace: %s) ===\nStatus: NotFound (%v)\n", target.Name, ns, err))
 			commands = append(commands, fmt.Sprintf("kubectl get svc -A | grep %s", target.Name))
-			return sb.String(), commands, ""
+			return sb.String(), commands, "", info
 		}
 
+		info.Found = true
+		info.Namespace = svc.Namespace
+		target.Namespace = svc.Namespace
 		sb.WriteString(fmt.Sprintf("=== TARGET SERVICE: %s (Namespace: %s, Type: %s, ClusterIP: %s) ===\n",
 			svc.Name, svc.Namespace, svc.Spec.Type, svc.Spec.ClusterIP))
 		for _, p := range svc.Spec.Ports {
-			sb.WriteString(fmt.Sprintf("Port: %d -> %s (%s)\n", p.Port, p.TargetPort.String(), p.Protocol))
+			portDesc := fmt.Sprintf("%d -> %s (%s)", p.Port, p.TargetPort.String(), p.Protocol)
+			sb.WriteString(fmt.Sprintf("Port: %s\n", portDesc))
+			info.Ports = append(info.Ports, portDesc)
 		}
 
 		// Endpoints
@@ -323,6 +399,7 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 				notReadyCount += len(subset.NotReadyAddresses)
 			}
 		}
+		info.ReplicasDesc = fmt.Sprintf("%d endpoints ready", readyCount)
 		sb.WriteString(fmt.Sprintf("Endpoints: %d Ready, %d Not Ready\n", readyCount, notReadyCount))
 		if readyCount == 0 && len(svc.Spec.Selector) > 0 {
 			rootCauseHint = fmt.Sprintf("Service '%s' has 0 ready endpoints. Traffic to port %s will be refused.", svc.Name, svc.Spec.ClusterIP)
@@ -334,7 +411,8 @@ func gatherTargetedTelemetry(ctx context.Context, k8sClient kubernetes.Interface
 		)
 	}
 
-	return sb.String(), commands, rootCauseHint
+	info.RootCauseHint = rootCauseHint
+	return sb.String(), commands, rootCauseHint, info
 }
 
 func analyzeInterServiceLatencyAndConnectivity(ctx context.Context, k8sClient kubernetes.Interface, targets []MentionTarget, defaultNamespace string) (string, string) {
@@ -409,14 +487,34 @@ func analyzeInterServiceLatencyAndConnectivity(ctx context.Context, k8sClient ku
 
 // RunAgentQuery executes the autonomous SRE agent investigation.
 func RunAgentQuery(ctx context.Context, k8sClient kubernetes.Interface, settings *AISettings, req *AgentRequest, graphCtx GraphContextProvider) (*AgentResponse, error) {
+	return RunAgentQueryWithStream(ctx, k8sClient, settings, req, graphCtx, nil, nil)
+}
+
+// RunAgentQueryWithStream executes the autonomous SRE agent investigation with optional streaming token and step callbacks.
+func RunAgentQueryWithStream(
+	ctx context.Context,
+	k8sClient kubernetes.Interface,
+	settings *AISettings,
+	req *AgentRequest,
+	graphCtx GraphContextProvider,
+	onStep func(step AgentStep),
+	onChunk StreamCallback,
+) (*AgentResponse, error) {
 	steps := []AgentStep{}
 	contextData := &strings.Builder{}
 	allCommands := []string{}
 	detectedRootCauses := []string{}
 
+	recordStep := func(s AgentStep) {
+		steps = append(steps, s)
+		if onStep != nil {
+			onStep(s)
+		}
+	}
+
 	namespace := req.Namespace
-	if namespace == "" {
-		namespace = "default"
+	if namespace == "all" || namespace == "_all" {
+		namespace = ""
 	}
 
 	// Step 1: Parse mentions and resolve context
@@ -425,71 +523,119 @@ func RunAgentQuery(ctx context.Context, k8sClient kubernetes.Interface, settings
 	if len(mentions) > 0 {
 		var mentionList []string
 		for _, m := range mentions {
-			mentionList = append(mentionList, fmt.Sprintf("@%s/%s", m.Kind, m.Name))
+			if m.Namespace != "" {
+				mentionList = append(mentionList, fmt.Sprintf("@%s/%s (Namespace: %s)", m.Kind, m.Name, m.Namespace))
+			} else {
+				mentionList = append(mentionList, fmt.Sprintf("@%s/%s (Cluster-Wide)", m.Kind, m.Name))
+			}
 		}
-		step1.Output = fmt.Sprintf("Parsed %d resource mentions: %s (Namespace: %s)",
-			len(mentions), strings.Join(mentionList, ", "), namespace)
+		step1.Output = fmt.Sprintf("Parsed %d resource mentions: %s",
+			len(mentions), strings.Join(mentionList, ", "))
 	} else {
-		step1.Output = fmt.Sprintf("Cluster-wide / namespace analysis targeting: %s", namespace)
+		if namespace != "" {
+			step1.Output = fmt.Sprintf("Cluster investigation targeting namespace '%s'", namespace)
+		} else {
+			step1.Output = "Universal cluster-wide investigation across all namespaces and workloads"
+		}
 	}
-	steps = append(steps, step1)
-	contextData.WriteString(fmt.Sprintf("Target Namespace: %s\nQuery: %s\n\n", namespace, req.Query))
+	recordStep(step1)
+	if namespace != "" {
+		contextData.WriteString(fmt.Sprintf("Target Namespace: %s\n", namespace))
+	} else {
+		contextData.WriteString("Scope: Cluster-Wide (Universal)\n")
+	}
+	contextData.WriteString(fmt.Sprintf("Query: %s\n\n", req.Query))
 
 	// Step 2: Targeted telemetry or cluster overview
+	var telemetryInfos []WorkloadTelemetry
 	if len(mentions) > 0 {
 		step2 := AgentStep{Step: "2", Description: "Deep Telemetry & Log Inspection for Targeted Mentions"}
 		var targetLogs []string
-		for _, m := range mentions {
-			telemetry, cmds, rc := gatherTargetedTelemetry(ctx, k8sClient, m, namespace)
+		for i := range mentions {
+			telemetry, cmds, rc, info := gatherTargetedTelemetry(ctx, k8sClient, &mentions[i], namespace)
 			contextData.WriteString(telemetry + "\n")
 			allCommands = append(allCommands, cmds...)
 			if rc != "" {
 				detectedRootCauses = append(detectedRootCauses, rc)
 			}
-			targetLogs = append(targetLogs, fmt.Sprintf("Gathered live telemetry for @%s/%s", m.Kind, m.Name))
+			telemetryInfos = append(telemetryInfos, info)
+			if mentions[i].Namespace != "" {
+				targetLogs = append(targetLogs, fmt.Sprintf("Gathered live telemetry for @%s/%s in namespace '%s'", mentions[i].Kind, mentions[i].Name, mentions[i].Namespace))
+			} else {
+				targetLogs = append(targetLogs, fmt.Sprintf("Gathered live telemetry for @%s/%s", mentions[i].Kind, mentions[i].Name))
+			}
 		}
 		step2.Output = strings.Join(targetLogs, "\n")
-		steps = append(steps, step2)
+		recordStep(step2)
 	} else {
-		step2 := AgentStep{Step: "2", Description: "Gathering cluster state for " + namespace}
-		clusterInfo, _ := gatherClusterStateForQuery(ctx, k8sClient, namespace, req.Query)
+		targetNs := namespace
+		if targetNs == "" {
+			targetNs = "default"
+		}
+		step2 := AgentStep{Step: "2", Description: "Gathering cluster state"}
+		clusterInfo, _ := gatherClusterStateForQuery(ctx, k8sClient, targetNs, req.Query)
 		contextData.WriteString(clusterInfo)
-		step2.Output = fmt.Sprintf("Gathered %d bytes of cluster state", len(clusterInfo))
-		steps = append(steps, step2)
+		step2.Output = fmt.Sprintf("Gathered %d bytes of cluster telemetry", len(clusterInfo))
+		recordStep(step2)
 
-		step3 := AgentStep{Step: "3", Description: "Identifying problematic resources"}
-		problemContext, _ := gatherProblematicResources(ctx, k8sClient, namespace)
+		step3 := AgentStep{Step: "3", Description: "Scanning for problematic workloads"}
+		problemContext, _ := gatherProblematicResources(ctx, k8sClient, targetNs)
 		contextData.WriteString(problemContext)
 		step3.Output = problemContext
-		steps = append(steps, step3)
+		recordStep(step3)
 	}
 
 	// Step 3 (if 2+ targets): Inter-service communication & latency analysis
+	latencyVerdict := ""
 	if len(mentions) >= 2 {
-		stepInter := AgentStep{Step: "3", Description: "Analyzing Inter-Service Latency & Network Topology"}
-		latencyReport, verdict := analyzeInterServiceLatencyAndConnectivity(ctx, k8sClient, mentions, namespace)
+		stepInter := AgentStep{Step: fmt.Sprintf("%d", len(steps)+1), Description: "Analyzing Inter-Service Latency & Network Topology"}
+		var latencyReport string
+		latencyReport, latencyVerdict = analyzeInterServiceLatencyAndConnectivity(ctx, k8sClient, mentions, namespace)
 		if latencyReport != "" {
 			contextData.WriteString(latencyReport + "\n")
-			stepInter.Output = verdict
-			steps = append(steps, stepInter)
+			stepInter.Output = latencyVerdict
+			recordStep(stepInter)
 		}
 	}
 
-	// Graph context
-	graphSummary := ""
+	// FalkorDB Knowledge Graph Context
 	if graphCtx != nil {
-		if summary, err := graphCtx.ContextForResource(ctx, "Namespace", namespace, ""); err == nil {
-			graphSummary = summary
-			contextData.WriteString("\n\n=== GRAPH TOPOLOGY CONTEXT ===\n" + summary)
+		var graphSummaries []string
+		for _, m := range mentions {
+			resKind := strings.Title(strings.ToLower(m.Kind))
+			if s, err := graphCtx.ContextForResource(ctx, resKind, m.Name, m.Namespace); err == nil && s != "" {
+				graphSummaries = append(graphSummaries, fmt.Sprintf("=== FALKORDB TOPOLOGY FOR @%s/%s ===\n%s", m.Kind, m.Name, s))
+			}
+			lowerQ := strings.ToLower(req.Query)
+			if strings.Contains(lowerQ, "blast") || strings.Contains(lowerQ, "impact") || strings.Contains(lowerQ, "depend") || strings.Contains(lowerQ, "who use") || strings.Contains(lowerQ, "what use") {
+				if b, err := graphCtx.BlastRadiusSummary(ctx, resKind, m.Name, m.Namespace); err == nil && b != "" {
+					graphSummaries = append(graphSummaries, fmt.Sprintf("=== FALKORDB BLAST RADIUS FOR @%s/%s ===\n%s", m.Kind, m.Name, b))
+				}
+			}
+		}
+		if len(graphSummaries) == 0 {
+			targetGraphNs := namespace
+			if targetGraphNs == "" && len(mentions) > 0 && mentions[0].Namespace != "" {
+				targetGraphNs = mentions[0].Namespace
+			}
+			if targetGraphNs == "" {
+				targetGraphNs = "default"
+			}
+			if summary, err := graphCtx.ContextForResource(ctx, "Namespace", targetGraphNs, ""); err == nil && summary != "" {
+				graphSummaries = append(graphSummaries, "=== CLUSTER TOPOLOGY GRAPH CONTEXT ===\n"+summary)
+			}
+		}
+		if len(graphSummaries) > 0 {
+			contextData.WriteString("\n\n" + strings.Join(graphSummaries, "\n\n") + "\n")
 		}
 	}
 
-	// Step 4: AI Synthesis
-	stepSynthesis := AgentStep{Step: "4", Description: "Autonomous SRE Diagnosis & Synthesis"}
+	// Step: Autonomous AI Reasoning & Synthesis
+	stepSynthesis := AgentStep{Step: fmt.Sprintf("%d", len(steps)+1), Description: "Autonomous SRE Diagnosis & Synthesis"}
 	response := &AgentResponse{
 		Query:        req.Query,
 		Steps:        steps,
-		GraphContext: graphSummary,
+		GraphContext: "",
 		Commands:     allCommands,
 	}
 
@@ -503,77 +649,255 @@ func RunAgentQuery(ctx context.Context, k8sClient kubernetes.Interface, settings
 		historyPrompt.WriteString("=== END CONVERSATION ===\n\n")
 	}
 
-	adapter, err := NewAdapter(settings)
-	if err == nil {
-		fullPrompt := fmt.Sprintf("%sEngineer's Query: %s\n\nLive Telemetry & Diagnostics:\n%s",
-			historyPrompt.String(), req.Query, contextData.String())
-		rawResponse, chatErr := adapter.Chat(ctx, agentSystemPrompt, fullPrompt)
-		if chatErr == nil {
-			stepSynthesis.Output = "AI reasoning and remediation synthesized successfully"
-			steps = append(steps, stepSynthesis)
-			response.Steps = steps
+	canUseAI := settings != nil && (settings.APIKey != "" || settings.Provider == ProviderOllama || strings.Contains(settings.BaseURL, "localhost") || strings.Contains(settings.BaseURL, "127.0.0.1"))
+	if canUseAI {
+		adapter, err := NewAdapter(settings)
+		if err == nil {
+			fullPrompt := fmt.Sprintf("%sEngineer's Query: %s\n\nLive Telemetry & Diagnostics:\n%s",
+				historyPrompt.String(), req.Query, contextData.String())
+			rawResponse, chatErr := adapter.ChatStream(ctx, agentSystemPrompt, fullPrompt, onChunk)
+			if chatErr == nil {
+				stepSynthesis.Output = fmt.Sprintf("AI reasoning and remediation synthesized successfully via %s (%s)", settings.Provider, settings.Model)
+				recordStep(stepSynthesis)
+				response.Steps = steps
 
-			cleaned := strings.TrimSpace(rawResponse)
-			cleaned = strings.TrimPrefix(cleaned, "```json")
-			cleaned = strings.TrimPrefix(cleaned, "```")
-			cleaned = strings.TrimSuffix(cleaned, "```")
-			cleaned = strings.TrimSpace(cleaned)
+				cleaned := strings.TrimSpace(rawResponse)
+				cleaned = strings.TrimPrefix(cleaned, "```json")
+				cleaned = strings.TrimPrefix(cleaned, "```")
+				cleaned = strings.TrimSuffix(cleaned, "```")
+				cleaned = strings.TrimSpace(cleaned)
 
-			var parsed struct {
-				Summary     string   `json:"summary"`
-				RootCause   string   `json:"rootCause"`
-				Commands    []string `json:"commands"`
-				YAMLPatches []string `json:"yamlPatches"`
-			}
-			if err := parseJSON(cleaned, &parsed); err == nil {
-				response.Summary = parsed.Summary
-				response.RootCause = parsed.RootCause
-				if len(parsed.Commands) > 0 {
-					response.Commands = parsed.Commands
+				var parsed struct {
+					Summary       string   `json:"summary"`
+					RootCause     string   `json:"rootCause"`
+					Commands      []string `json:"commands"`
+					YAMLPatches   []string `json:"yamlPatches"`
+					CypherQueries []string `json:"cypherQueries"`
+					FollowUps     []string `json:"followUps"`
 				}
-				response.YAMLPatches = parsed.YAMLPatches
+				if err := parseJSON(cleaned, &parsed); err == nil {
+					response.Summary = parsed.Summary
+					response.RootCause = parsed.RootCause
+					if len(parsed.Commands) > 0 {
+						response.Commands = parsed.Commands
+					}
+					response.YAMLPatches = parsed.YAMLPatches
+					response.CypherQueries = parsed.CypherQueries
+					response.FollowUps = parsed.FollowUps
+				} else {
+					response.Summary = rawResponse
+				}
+				if len(response.FollowUps) == 0 {
+					response.FollowUps = generateDefaultFollowUps(mentions, req.Query)
+				}
 				return response, nil
 			} else {
-				response.Summary = rawResponse
+				klog.ErrorS(chatErr, "AI provider call failed", "provider", settings.Provider, "model", settings.Model)
+				stepSynthesis.Output = fmt.Sprintf("AI provider (%s/%s) error: %v", settings.Provider, settings.Model, chatErr)
+				recordStep(stepSynthesis)
+				response.Steps = steps
+				response.Summary = fmt.Sprintf("### ⚠️ AI Provider Error (%s / %s)\n\nCould not obtain analysis from the configured AI provider:\n> **Error:** `%v`\n\n**Troubleshooting steps:**\n1. Check your API Key and endpoint in **[Settings > AI Platform](/settings/ai)**.\n2. Click **Verify Connection** to test connectivity.\n3. Verify provider account quota and network egress.", settings.Provider, settings.Model, chatErr)
+				response.FollowUps = []string{"Verify AI Settings connectivity", "Check cluster network egress", "Retry with cluster fallback"}
 				return response, nil
 			}
 		}
 	}
 
-	// Fallback deterministic synthesis when AI adapter is unconfigured or rate limited
-	stepSynthesis.Output = "Synthesized diagnosis from live telemetry and telemetry traces"
-	steps = append(steps, stepSynthesis)
+	// Knowledge-grounded synthesis when external AI provider is unconfigured
+	stepSynthesis.Output = "Synthesized diagnosis from live telemetry (Configure AI Provider in Settings for LLM analysis)"
+	recordStep(stepSynthesis)
 	response.Steps = steps
 
-	if len(detectedRootCauses) > 0 {
-		response.RootCause = strings.Join(detectedRootCauses, "\n")
-	}
+	fallbackSummary, fallbackRootCause := synthesizeFallbackResponse(
+		req.Query, mentions, telemetryInfos, latencyVerdict, detectedRootCauses, namespace,
+	)
+	response.Summary = "### ℹ️ AI Provider Not Configured\n\n*Using built-in cluster telemetry analyzer. To enable full LLM autonomous reasoning, configure your API key in **[Settings > AI Platform](/settings/ai)**.*\n\n" + fallbackSummary
+	response.RootCause = fallbackRootCause
+	response.FollowUps = generateDefaultFollowUps(mentions, req.Query)
 
-	var summarySb strings.Builder
-	if len(mentions) > 0 {
-		summarySb.WriteString(fmt.Sprintf("### SRE Diagnostic Analysis for %d Mentioned Resources\n\n", len(mentions)))
-		for _, m := range mentions {
-			summarySb.WriteString(fmt.Sprintf("- **Target `@%s/%s`**: Real-time state, container statuses, and pod events inspected.\n", m.Kind, m.Name))
-		}
-		if len(detectedRootCauses) > 0 {
-			summarySb.WriteString(fmt.Sprintf("\n> [!WARNING]\n> **Identified Issue**: %s\n\n", strings.Join(detectedRootCauses, "; ")))
-		} else {
-			summarySb.WriteString("\n> [!NOTE]\n> All inspected containers and endpoints report healthy conditions.\n\n")
-		}
-	} else {
-		summarySb.WriteString(fmt.Sprintf("### Cluster SRE State for Namespace `%s`\n\n", namespace))
-		summarySb.WriteString(fmt.Sprintf("Autonomous investigation evaluated active nodes, pods, warning events, and services in `%s`.\n", namespace))
-	}
-
-	response.Summary = summarySb.String()
 	if len(response.Commands) == 0 {
+		cmdNs := namespace
+		if cmdNs == "" {
+			cmdNs = "default"
+		}
 		response.Commands = []string{
-			fmt.Sprintf("kubectl get pods -n %s -o wide", namespace),
-			fmt.Sprintf("kubectl get events -n %s --sort-by='.metadata.creationTimestamp'", namespace),
+			fmt.Sprintf("kubectl get pods -n %s -o wide", cmdNs),
+			fmt.Sprintf("kubectl get events -n %s --sort-by='.metadata.creationTimestamp'", cmdNs),
 		}
 	}
 
 	return response, nil
+}
+
+func generateDefaultFollowUps(mentions []MentionTarget, query string) []string {
+	var followUps []string
+	if len(mentions) > 0 {
+		m := mentions[0]
+		switch strings.ToLower(m.Kind) {
+		case "pod":
+			followUps = append(followUps,
+				fmt.Sprintf("Inspect live container logs for @pod/%s?", m.Name),
+				fmt.Sprintf("Run FalkorDB Cypher query for @pod/%s dependents?", m.Name),
+				fmt.Sprintf("Audit RBAC privileges for @pod/%s?", m.Name),
+			)
+		case "deployment":
+			followUps = append(followUps,
+				fmt.Sprintf("Check replica rollout status for @deployment/%s?", m.Name),
+				fmt.Sprintf("Compute blast radius of @deployment/%s in FalkorDB?", m.Name),
+				fmt.Sprintf("Inspect Services and Ingress routing to @deployment/%s?", m.Name),
+			)
+		case "service":
+			followUps = append(followUps,
+				fmt.Sprintf("Verify endpoint slices and pod selector for @service/%s?", m.Name),
+				fmt.Sprintf("Trace inter-service latency pathways for @service/%s?", m.Name),
+				fmt.Sprintf("Query FalkorDB topology routing to @service/%s?", m.Name),
+			)
+		default:
+			followUps = append(followUps,
+				fmt.Sprintf("Inspect recent warning events for @%s/%s?", m.Kind, m.Name),
+				fmt.Sprintf("Run blast radius analysis for @%s/%s?", m.Kind, m.Name),
+			)
+		}
+	} else {
+		followUps = append(followUps,
+			"Scan cluster for CrashLoopBackOff and OOMKilled workloads?",
+			"Analyze inter-service latency across high-traffic pods?",
+			"Audit cluster RBAC privileges and dangerous bindings?",
+		)
+	}
+	return followUps
+}
+
+
+func synthesizeFallbackResponse(
+	query string,
+	mentions []MentionTarget,
+	workloads []WorkloadTelemetry,
+	latencyVerdict string,
+	detectedRootCauses []string,
+	namespace string,
+) (string, string) {
+	q := strings.ToLower(query)
+	isPurposeQuery := strings.Contains(q, "what") ||
+		strings.Contains(q, "used for") ||
+		strings.Contains(q, "purpose") ||
+		strings.Contains(q, "role") ||
+		strings.Contains(q, "why is this") ||
+		strings.Contains(q, "explain") ||
+		strings.Contains(q, "architecture") ||
+		strings.Contains(q, "how does") ||
+		strings.Contains(q, "function")
+
+	var sb strings.Builder
+	rootCause := ""
+	if len(detectedRootCauses) > 0 {
+		rootCause = strings.Join(detectedRootCauses, "\n")
+	}
+
+	if len(mentions) > 0 {
+		for _, wl := range workloads {
+			name := strings.ToLower(wl.Target.Name)
+			switch {
+			case strings.Contains(name, "falkordb"):
+				sb.WriteString(fmt.Sprintf("### Architectural Role & Function of `@%s/%s`\n\n", wl.Target.Kind, wl.Target.Name))
+				sb.WriteString("**FalkorDB** is an ultra-fast, in-memory Graph Database engine built on GraphBLAS and the Redis protocol. Within **Kubernetes Dashboard (KubePilot)**, it serves as the central **Cluster Topology & Knowledge Graph Backend**.\n\n")
+				sb.WriteString("#### Primary Capabilities in this Environment:\n")
+				sb.WriteString("- **Topology Knowledge Engine**: Dynamically indexes and persists graph relationships between cluster workloads (`Deployments`, `Pods`, `Services`, `Endpoints`, `ConfigMaps`, `Secrets`, and `Namespaces`).\n")
+				sb.WriteString("- **Sub-Millisecond Graph Traversal**: Powers real-time visual dependency graphs, allowing operators to trace inter-service connections, network paths, and ownership hierarchies.\n")
+				sb.WriteString("- **Blast Radius & Impact Analysis**: Simulates the downstream impact of node drains or pod evictions before disruptive actions are taken.\n")
+				sb.WriteString("- **RBAC Privilege Escalation Mapping**: Traces permission attack pathways across ServiceAccounts, Roles, and RoleBindings.\n\n")
+				sb.WriteString("#### Live Telemetry & Runtime Status:\n")
+				if wl.Found {
+					sb.WriteString(fmt.Sprintf("- **Namespace**: `%s`\n", wl.Namespace))
+					sb.WriteString(fmt.Sprintf("- **Replicas**: %s\n", wl.ReplicasDesc))
+					if wl.Image != "" {
+						sb.WriteString(fmt.Sprintf("- **Container Image**: `%s`\n", wl.Image))
+					}
+					if len(wl.Ports) > 0 {
+						sb.WriteString(fmt.Sprintf("- **Exposed Ports**: `%s`\n", strings.Join(wl.Ports, ", ")))
+					}
+					if len(detectedRootCauses) == 0 {
+						sb.WriteString("- **Health Condition**: Inspected and fully operational with 0 container restart loops.\n\n")
+					} else {
+						sb.WriteString(fmt.Sprintf("- **Health Condition**: Degraded — %s\n\n", strings.Join(detectedRootCauses, "; ")))
+					}
+				} else {
+					sb.WriteString("- **Status**: Resource not found in cluster.\n\n")
+				}
+
+			case strings.Contains(name, "kong"):
+				sb.WriteString(fmt.Sprintf("### Architectural Role & Function of `@%s/%s`\n\n", wl.Target.Kind, wl.Target.Name))
+				sb.WriteString("**Kong** is the cloud-native API Gateway and ingress reverse proxy for Kubernetes Dashboard.\n\n")
+				sb.WriteString("#### Primary Capabilities in this Environment:\n")
+				sb.WriteString("- **Unified Ingress Entrypoint**: Routes external HTTPS traffic securely into the dashboard cluster environment.\n")
+				sb.WriteString("- **Microservice Routing**: Directs client requests to Dashboard Web frontend and Dashboard API backend.\n")
+				sb.WriteString("- **TLS Termination & Security**: Manages SSL/TLS termination, rate limiting, and security headers.\n\n")
+				if wl.Found {
+					sb.WriteString(fmt.Sprintf("- **Namespace**: `%s` | **Replicas**: %s\n\n", wl.Namespace, wl.ReplicasDesc))
+				}
+
+			case strings.Contains(name, "kubernetes-dashboard-api") || strings.Contains(name, "dashboard-api"):
+				sb.WriteString(fmt.Sprintf("### Architectural Role & Function of `@%s/%s`\n\n", wl.Target.Kind, wl.Target.Name))
+				sb.WriteString("**Kubernetes Dashboard API** is the core backend microservice for the dashboard platform.\n\n")
+				sb.WriteString("#### Primary Capabilities in this Environment:\n")
+				sb.WriteString("- **Kube-Apiserver Gateway**: Interfaces with `kube-apiserver` to query cluster state, metrics, logs, and configurations.\n")
+				sb.WriteString("- **Autonomous SRE Engine**: Coordinates multi-step diagnostics, log inspection, and graph-grounded telemetry.\n\n")
+				if wl.Found {
+					sb.WriteString(fmt.Sprintf("- **Namespace**: `%s` | **Replicas**: %s\n\n", wl.Namespace, wl.ReplicasDesc))
+				}
+
+			case strings.Contains(name, "metrics-scraper"):
+				sb.WriteString(fmt.Sprintf("### Architectural Role & Function of `@%s/%s`\n\n", wl.Target.Kind, wl.Target.Name))
+				sb.WriteString("**Metrics Scraper** collects time-series resource utilization metrics.\n\n")
+				sb.WriteString("#### Primary Capabilities in this Environment:\n")
+				sb.WriteString("- **Metric Harvesting**: Regularly scrapes CPU and Memory usage from Kubernetes Metrics Server (`metrics.k8s.io`).\n")
+				sb.WriteString("- **Dashboard Analytics**: Caches historical trends to power CPU/memory graphs in the dashboard UI.\n\n")
+				if wl.Found {
+					sb.WriteString(fmt.Sprintf("- **Namespace**: `%s` | **Replicas**: %s\n\n", wl.Namespace, wl.ReplicasDesc))
+				}
+
+			default:
+				// Generic / custom workload
+				sb.WriteString(fmt.Sprintf("### Architectural Analysis for `@%s/%s`\n\n", wl.Target.Kind, wl.Target.Name))
+				if wl.Found {
+					sb.WriteString(fmt.Sprintf("Workload `@%s/%s` is running in namespace `%s`.\n\n", wl.Target.Kind, wl.Target.Name, wl.Namespace))
+					sb.WriteString("#### Specifications & Status:\n")
+					if wl.Image != "" {
+						sb.WriteString(fmt.Sprintf("- **Container Image**: `%s`\n", wl.Image))
+					}
+					sb.WriteString(fmt.Sprintf("- **Replicas**: %s\n", wl.ReplicasDesc))
+					if len(wl.Ports) > 0 {
+						sb.WriteString(fmt.Sprintf("- **Exposed Ports**: `%s`\n", strings.Join(wl.Ports, ", ")))
+					}
+					if len(detectedRootCauses) == 0 {
+						sb.WriteString("- **Workload Health**: Inspected conditions and child pods are running normally.\n\n")
+					} else {
+						sb.WriteString(fmt.Sprintf("- **Identified Issues**: %s\n\n", strings.Join(detectedRootCauses, "; ")))
+					}
+				} else {
+					sb.WriteString(fmt.Sprintf("Workload `@%s/%s` was not found across any namespace in the cluster.\n\n", wl.Target.Kind, wl.Target.Name))
+				}
+			}
+		}
+
+		if latencyVerdict != "" {
+			sb.WriteString(fmt.Sprintf("#### Inter-Service Latency Analysis:\n%s\n\n", latencyVerdict))
+		}
+
+		if !isPurposeQuery && len(detectedRootCauses) > 0 {
+			sb.WriteString(fmt.Sprintf("> [!WARNING]\n> **Identified Degradation**: %s\n\n", strings.Join(detectedRootCauses, "; ")))
+		}
+	} else {
+		// Cluster-wide general query
+		sb.WriteString("### Cluster-Wide SRE Overview\n\n")
+		if len(detectedRootCauses) > 0 {
+			sb.WriteString(fmt.Sprintf("> [!WARNING]\n> **Identified Problematic Workloads**: %s\n\n", strings.Join(detectedRootCauses, "; ")))
+		} else {
+			sb.WriteString("All scanned workloads, nodes, and cluster endpoints are operating within healthy parameters.\n\n")
+		}
+	}
+
+	return sb.String(), rootCause
 }
 
 // gatherClusterStateForQuery collects relevant cluster state for the SRE agent.
