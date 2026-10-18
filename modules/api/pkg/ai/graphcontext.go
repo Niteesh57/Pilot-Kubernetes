@@ -21,4 +21,6 @@ import "context"
 type GraphContextProvider interface {
 	ContextForResource(ctx context.Context, kind, name, namespace string) (string, error)
 	BlastRadiusSummary(ctx context.Context, kind, name, namespace string) (string, error)
+	DiagnoseService(ctx context.Context, namespace, name string) (string, error)
+	AttackPathsSummary(ctx context.Context, namespace string) (string, error)
 }

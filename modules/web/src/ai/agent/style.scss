@@ -522,6 +522,39 @@
   }
 }
 
+/* Graph-Informed Action Banner */
+.kd-graph-action-banner {
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(0, 188, 212, 0.12) 0%, rgba(124, 77, 255, 0.12) 100%);
+  border: 1px solid rgba(0, 188, 212, 0.35);
+  border-left: 4px solid #00e5ff;
+  padding: 12px 16px;
+
+  .kd-graph-action-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #00e5ff;
+    letter-spacing: 0.3px;
+    margin-bottom: 6px;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+      color: #ffd600;
+    }
+  }
+
+  .kd-graph-action-text {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: #e0f7fa;
+  }
+}
+
 /* Inline Section: Commands, Cypher, Manifests */
 .kd-inline-group {
   display: flex;

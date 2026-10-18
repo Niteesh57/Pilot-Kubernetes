@@ -37,21 +37,21 @@ ARG VERSION=latest
 WORKDIR /workspace
 
 # Copy required local modules
-COPY /common/certificates /workspace/common/certificates
-COPY /common/client /workspace/common/client
-COPY /common/csrf /workspace/common/csrf
-COPY /common/errors /workspace/common/errors
-COPY /common/types /workspace/common/types
-COPY /common/helpers /workspace/common/helpers
+COPY /modules/common/certificates /workspace/common/certificates
+COPY /modules/common/client /workspace/common/client
+COPY /modules/common/csrf /workspace/common/csrf
+COPY /modules/common/errors /workspace/common/errors
+COPY /modules/common/types /workspace/common/types
+COPY /modules/common/helpers /workspace/common/helpers
 
 WORKDIR /workspace/api
 
 # Retrieve application dependencies.
 # This allows the container build to reuse cached dependencies.
 # Expecting to copy go.mod and if present go.sum.
-COPY api/go.* ./
-COPY api/pkg ./pkg
-COPY api/main.go ./
+COPY /modules/api/go.* ./
+COPY /modules/api/pkg ./pkg
+COPY /modules/api/main.go ./
 RUN go mod tidy
 RUN go mod download
 

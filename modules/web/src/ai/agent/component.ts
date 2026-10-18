@@ -29,6 +29,7 @@ import {
   AgentRequest,
   AgentResponse,
   ResourcesResponse,
+  extractStreamingSummary,
 } from '@common/services/global/ai.service';
 import {NamespaceService} from '@common/services/global/namespace';
 
@@ -37,6 +38,7 @@ export interface ConversationTurn {
   query: string;
   queryTime: Date;
   text: string;
+  rawStream?: string;
   response?: AgentResponse;
   stepsExpanded?: boolean;
   isStreaming?: boolean;
@@ -235,15 +237,18 @@ export class AIAgentComponent implements OnInit, OnDestroy, AfterViewChecked {
       },
       // onToken
       token => {
-        turn.text += token;
+        turn.rawStream = (turn.rawStream || '') + token;
+        turn.text = extractStreamingSummary(turn.rawStream);
         this.shouldScrollBottom = true;
       },
       // onComplete
       res => {
         turn.response = res;
-        // If raw tokens were raw JSON, display the extracted clean markdown summary
-        if (!turn.text || turn.text.trim().startsWith('{')) {
+        // Always display the extracted clean markdown summary
+        if (res.summary) {
           turn.text = res.summary;
+        } else if (turn.text) {
+          turn.text = extractStreamingSummary(turn.text);
         }
         turn.isStreaming = false;
         this.isThinking = false;

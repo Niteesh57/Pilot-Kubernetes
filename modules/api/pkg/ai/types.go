@@ -165,6 +165,8 @@ type AgentResponse struct {
 	Steps         []AgentStep `json:"steps"`
 	Summary       string      `json:"summary"`
 	RootCause     string      `json:"rootCause,omitempty"`
+	GraphAction   string      `json:"graphAction,omitempty"`
+	ToolsExecuted []string    `json:"toolsExecuted,omitempty"`
 	Commands      []string    `json:"commands,omitempty"`
 	YAMLPatches   []string    `json:"yamlPatches,omitempty"`
 	FollowUps     []string    `json:"followUps,omitempty"`

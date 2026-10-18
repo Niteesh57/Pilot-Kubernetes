@@ -34,6 +34,7 @@ import (
 	"k8s.io/dashboard/api/pkg/handler"
 	"k8s.io/dashboard/api/pkg/integration"
 	integrationapi "k8s.io/dashboard/api/pkg/integration/api"
+	metricapi "k8s.io/dashboard/api/pkg/integration/metric/api"
 	"k8s.io/dashboard/certificates"
 	"k8s.io/dashboard/certificates/ecdsa"
 	"k8s.io/dashboard/client"
@@ -52,7 +53,6 @@ func main() {
 
 	if !args.IsProxyEnabled() {
 		ensureAPIServerConnectionOrDie()
-		startFalkorDBSyncer()
 	} else {
 		klog.Info("Running in proxy mode. InClusterClient connections will be disabled.")
 	}
@@ -62,6 +62,8 @@ func main() {
 
 	if !args.IsProxyEnabled() {
 		configureMetricsProvider(integrationManager)
+		startFalkorDBSyncer()
+		startTelemetrySyncer(integrationManager)
 	} else {
 		klog.Info("Skipping metrics configuration. Metrics not available in proxy mode.")
 	}
@@ -112,7 +114,24 @@ func startFalkorDBSyncer() {
 	manager := graph.NewManager(settings.FalkorDBAddr, settings.FalkorDBPassword, settings.FalkorDBGraphName, 60, k8sClient)
 	graph.SetManager(manager)
 	manager.Start(context.Background())
+	go func() {
+		if err := manager.SyncNow(context.Background()); err != nil {
+			klog.ErrorS(err, "Initial immediate FalkorDB sync failed")
+		}
+	}()
 	klog.InfoS("FalkorDB syncer started", "addr", settings.FalkorDBAddr, "graph", settings.FalkorDBGraphName)
+}
+
+func startTelemetrySyncer(integrationManager integration.Manager) {
+	k8sClient := client.InClusterClient()
+	if k8sClient == nil {
+		return
+	}
+	syncer := graph.NewTelemetrySyncer(k8sClient, func() metricapi.MetricClient {
+		return integrationManager.Metric().Client()
+	}, graph.DefaultClient, 60)
+	go syncer.Start(context.Background())
+	klog.Info("FalkorDB telemetry syncer started")
 }
 
 func serve() {

@@ -15,23 +15,22 @@ limitations under the License.
 -->
 
 <div class="kd-traffic-container">
-  <!-- Header Card & Controls -->
+  <!-- Header Card & Global Controls -->
   <mat-card class="kd-traffic-card kd-header-card">
     <div class="kd-header-content">
       <div class="kd-title-box">
         <mat-icon color="primary" class="kd-header-icon">device_hub</mat-icon>
         <div>
-          <h2>Topology &amp; Graph Explorer</h2>
+          <h2>Cluster Observability &amp; Knowledge Graph</h2>
           <p class="kd-subtitle">
-            Live service interconnections, workload dependency trees &amp; namespace traffic flow
+            Universal topology relationships, live telemetry metrics, natural-language AI queries &amp; custom dashboards
           </p>
         </div>
       </div>
 
       <div class="kd-actions-box">
-
-        <!-- Workload / Application Filter Dropdown -->
-        <mat-form-field appearance="outline" class="kd-group-select" *ngIf="availableGroups.length > 0">
+        <!-- Workload / Application Filter Dropdown (Active when on Topology Tab) -->
+        <mat-form-field appearance="outline" class="kd-group-select" *ngIf="selectedTabIndex === 0 && availableGroups.length > 0">
           <mat-label>Workload Focus</mat-label>
           <mat-select [(value)]="selectedGroup" (selectionChange)="onGroupChange()">
             <mat-option value="ALL">All Applications ({{ availableGroups.length }})</mat-option>
@@ -41,8 +40,8 @@ limitations under the License.
           </mat-select>
         </mat-form-field>
 
-        <!-- Search / Filter Field -->
-        <mat-form-field appearance="outline" class="kd-search-input">
+        <!-- Search / Filter Field (Active when on Topology Tab) -->
+        <mat-form-field appearance="outline" class="kd-search-input" *ngIf="selectedTabIndex === 0">
           <mat-label>Filter nodes</mat-label>
           <input
             matInput
@@ -56,7 +55,7 @@ limitations under the License.
         <!-- Refresh Button -->
         <button mat-stroked-button (click)="refresh()" [disabled]="isLoading" class="kd-refresh-btn">
           <mat-icon *ngIf="!isLoading">refresh</mat-icon>
-          <mat-spinner *ngIf="isLoading" diameter="20" color="accent"></mat-spinner>
+          <mat-spinner *ngIf="isLoading" diameter="18" color="accent"></mat-spinner>
           <span>Refresh</span>
         </button>
       </div>
@@ -69,300 +68,1020 @@ limitations under the License.
     <div>{{ error }}</div>
   </mat-card>
 
-  <!-- Interactive SVG Topology Canvas Card -->
-  <mat-card class="kd-traffic-card kd-canvas-card">
-    <!-- Toolbar: Legend & Zoom Controls -->
-    <div class="kd-canvas-toolbar">
-      <div class="kd-legend-bar">
-        <span class="legend-pill ingress"><span class="dot"></span> Ingress</span>
-        <span class="legend-pill service"><span class="dot"></span> Service</span>
-        <span class="legend-pill workload"><span class="dot"></span> Workload</span>
-        <span class="legend-pill pod"><span class="dot"></span> Pod</span>
-        <span class="legend-pill config"><span class="dot"></span> Config / Secret</span>
-        <span class="legend-pill auth"><span class="dot"></span> ServiceAccount / PVC</span>
-      </div>
+  <!-- Main Multi-Facet Observability Tabs (Native Kubernetes Dashboard Design) -->
+  <mat-tab-group
+    class="kd-traffic-tab-group"
+    [(selectedIndex)]="selectedTabIndex"
+  >
+    <!-- TAB 1: CLUSTER TOPOLOGY GRAPH -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="kd-tab-icon">device_hub</mat-icon>
+        <span>Cluster Topology</span>
+      </ng-template>
 
-      <div class="kd-zoom-tools">
-        <button mat-icon-button (click)="zoomIn()" title="Zoom In">
-          <mat-icon>add</mat-icon>
-        </button>
-        <span class="zoom-level">{{ (zoomScale * 100) | number:'1.0-0' }}%</span>
-        <button mat-icon-button (click)="zoomOut()" title="Zoom Out">
-          <mat-icon>remove</mat-icon>
-        </button>
-        <button mat-icon-button (click)="resetZoom()" title="Reset Canvas View">
-          <mat-icon>center_focus_strong</mat-icon>
-        </button>
-      </div>
-    </div>
-
-    <!-- SVG Canvas Viewport -->
-    <div
-      class="kd-svg-viewport"
-      [class.panning]="isPanning"
-      (mousedown)="startPan($event)"
-      (mousemove)="doPan($event)"
-      (mouseup)="endPan()"
-      (mouseleave)="endPan()"
-    >
-      <!-- Loading State -->
-      <div *ngIf="isLoading" class="kd-canvas-loading">
-        <mat-spinner diameter="48"></mat-spinner>
-        <span>Discovering cluster topology...</span>
-      </div>
-
-      <!-- Empty State -->
-      <div *ngIf="!isLoading && layoutNodes.length === 0" class="kd-canvas-empty">
-        <mat-icon>device_hub</mat-icon>
-        <p>No resources found in cluster matching current filters.</p>
-      </div>
-
-      <!-- SVG Graph Layer -->
-      <svg
-        *ngIf="layoutNodes.length > 0"
-        class="kd-topology-svg"
-        [attr.width]="svgWidth"
-        [attr.height]="svgHeight"
-      >
-        <defs>
-          <!-- Arrowhead Marker for Directed Edges -->
-          <marker
-            id="topo-arrow"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255, 255, 255, 0.45)" />
-          </marker>
-          <marker
-            id="topo-arrow-active"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#00bcd4" />
-          </marker>
-        </defs>
-
-        <g [attr.transform]="'translate(' + panX + ',' + panY + ') scale(' + zoomScale + ')'">
-          <!-- Connecting Edges -->
-          <g class="svg-edges-layer">
-            <g *ngFor="let edge of layoutEdges" class="svg-edge-group">
-              <path
-                [attr.d]="edge.path"
-                class="svg-edge-path"
-                [class.selected-edge]="selectedNode?.id === edge.source || selectedNode?.id === edge.target"
-                marker-end="url(#topo-arrow)"
-              />
-              <text
-                *ngIf="edge.label"
-                [attr.x]="edge.midX"
-                [attr.y]="edge.midY"
-                class="svg-edge-label"
-              >
-                {{ edge.label }}
-              </text>
-            </g>
-          </g>
-
-          <!-- Graph Nodes -->
-          <g class="svg-nodes-layer">
-            <g
-              *ngFor="let node of layoutNodes"
-              [attr.transform]="'translate(' + node.x + ',' + node.y + ')'"
-              class="svg-node-group"
-              [class.selected-node]="selectedNode?.id === node.id"
-              (click)="selectNode(node); $event.stopPropagation()"
-            >
-              <!-- Node Background Card -->
-              <rect
-                [attr.width]="node.width"
-                [attr.height]="node.height"
-                rx="8"
-                class="node-rect"
-                [class]="'kind-' + node.kind.toLowerCase()"
-              />
-
-              <!-- Status Dot -->
-              <circle cx="16" cy="18" r="4.5" [class]="'status-circle ' + getStatusClass(node.status)" />
-
-              <!-- Kind Badge Text -->
-              <text x="28" y="22" class="node-kind-title">{{ node.kind | uppercase }}</text>
-
-              <!-- Node Name -->
-              <text x="16" y="42" class="node-name-title">{{ node.shortName }}</text>
-
-              <!-- Meta subtitle (ports / replicas / podIP / status) -->
-              <text x="16" y="58" class="node-meta-subtitle">
-                {{ node.properties?.ports || node.properties?.replicas || node.properties?.podIP || node.status }}
-              </text>
-            </g>
-          </g>
-        </g>
-      </svg>
-
-      <!-- Slide-over Inspector Drawer Docked Inside Canvas (Native Kubernetes Dashboard UI) -->
-      <div
-        *ngIf="selectedNode"
-        class="kd-node-inspector"
-      >
-        <div class="kd-inspector-header">
-          <div class="kd-inspector-title-group">
-            <div class="kd-inspector-meta">
-              <span class="kd-kind-label">{{ selectedNode.kind }}</span>
-              <span class="kd-bullet">&bull;</span>
-              <span>{{ selectedNode.namespace || 'Cluster-Wide' }}</span>
+      <div class="kd-tab-content">
+        <mat-card class="kd-traffic-card kd-canvas-card">
+          <!-- Toolbar: Legend & Zoom Controls -->
+          <div class="kd-canvas-toolbar">
+            <div class="kd-legend-bar">
+              <span class="legend-pill ingress"><span class="dot"></span> Ingress</span>
+              <span class="legend-pill service"><span class="dot"></span> Service</span>
+              <span class="legend-pill workload"><span class="dot"></span> Workload</span>
+              <span class="legend-pill pod"><span class="dot"></span> Pod</span>
+              <span class="legend-pill config"><span class="dot"></span> Config / Secret</span>
+              <span class="legend-pill auth"><span class="dot"></span> ServiceAccount / PVC</span>
             </div>
-            <h3 class="kd-inspector-name">
-              <a
-                *ngIf="getResourceHref(selectedNode).length > 0; else noLink"
-                [routerLink]="getResourceHref(selectedNode)"
-                title="Open resource in Kubernetes Dashboard"
-              >
-                {{ selectedNode.name }}
-              </a>
-              <ng-template #noLink>{{ selectedNode.name }}</ng-template>
-            </h3>
-          </div>
-          <button mat-icon-button (click)="closeDrawer()" title="Close inspector">
-            <mat-icon>close</mat-icon>
-          </button>
-        </div>
 
-        <mat-divider></mat-divider>
-
-        <div class="kd-inspector-body">
-          <div class="kd-inspector-section">
-            <div class="kd-section-header">Resource Information</div>
-            <div class="kd-props-table">
-              <div class="kd-prop-row">
-                <span class="kd-prop-label">Status</span>
-                <span class="kd-prop-val status-val" [class]="getStatusClass(selectedNode.status)">
-                  {{ selectedNode.status }}
-                </span>
-              </div>
-              <div class="kd-prop-row" *ngIf="selectedNode.group">
-                <span class="kd-prop-label">Application</span>
-                <span class="kd-prop-val">{{ selectedNode.group }}</span>
-              </div>
-              <div class="kd-prop-row" *ngFor="let p of getPropertiesList(selectedNode)">
-                <span class="kd-prop-label">{{ p.key }}</span>
-                <span class="kd-prop-val font-mono">{{ p.value }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Inbound Routes -->
-          <div class="kd-inspector-section" *ngIf="getInboundEdges(selectedNode.id).length > 0">
-            <mat-divider class="kd-section-divider"></mat-divider>
-            <div class="kd-section-header">
-              Inbound Routes ({{ getInboundEdges(selectedNode.id).length }})
-            </div>
-            <div class="kd-conn-list">
-              <div class="kd-conn-item" *ngFor="let inEdge of getInboundEdges(selectedNode.id)">
-                <mat-icon inline class="kd-conn-icon">arrow_downward</mat-icon>
-                <span class="kd-conn-text">{{ inEdge.source }}</span>
-                <span *ngIf="inEdge.port" class="kd-conn-port">:{{ inEdge.port }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Outbound Dependencies -->
-          <div class="kd-inspector-section" *ngIf="getOutboundEdges(selectedNode.id).length > 0">
-            <mat-divider class="kd-section-divider"></mat-divider>
-            <div class="kd-section-header">
-              Outbound Dependencies ({{ getOutboundEdges(selectedNode.id).length }})
-            </div>
-            <div class="kd-conn-list">
-              <div class="kd-conn-item" *ngFor="let outEdge of getOutboundEdges(selectedNode.id)">
-                <mat-icon inline class="kd-conn-icon">arrow_upward</mat-icon>
-                <span class="kd-conn-text">{{ outEdge.target }}</span>
-                <span *ngIf="outEdge.type" class="kd-conn-type">({{ outEdge.type }})</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Inline Autonomous AI Investigation Section -->
-          <div
-            class="kd-inspector-section kd-investigation-section"
-            *ngIf="isInvestigating || investigationText || investigationResult || investigationError"
-          >
-            <mat-divider class="kd-section-divider"></mat-divider>
-            <div class="kd-section-header kd-ai-header">
-              <div class="kd-ai-header-left">
-                <mat-icon inline>memory</mat-icon>
-                <span>Live AI Diagnosis</span>
-              </div>
-              <button
-                mat-icon-button
-                *ngIf="isInvestigating"
-                (click)="stopInvestigation()"
-                class="kd-stop-btn"
-                title="Stop Analysis"
-              >
-                <mat-icon>stop</mat-icon>
+            <div class="kd-zoom-tools">
+              <button mat-icon-button (click)="zoomIn()" title="Zoom In">
+                <mat-icon>add</mat-icon>
+              </button>
+              <span class="zoom-level">{{ (zoomScale * 100) | number:'1.0-0' }}%</span>
+              <button mat-icon-button (click)="zoomOut()" title="Zoom Out">
+                <mat-icon>remove</mat-icon>
+              </button>
+              <button mat-icon-button (click)="resetZoom()" title="Reset Canvas View">
+                <mat-icon>center_focus_strong</mat-icon>
               </button>
             </div>
+          </div>
 
-            <!-- Spinner indicator while thinking -->
-            <div class="kd-investigation-loading" *ngIf="isInvestigating && !investigationText">
-              <mat-spinner diameter="18" color="primary"></mat-spinner>
-              <span>Inspecting live telemetry, conditions &amp; logs...</span>
+          <!-- SVG Canvas Viewport -->
+          <div
+            class="kd-svg-viewport"
+            [class.panning]="isPanning"
+            (mousedown)="startPan($event)"
+            (mousemove)="doPan($event)"
+            (mouseup)="endPan()"
+            (mouseleave)="endPan()"
+          >
+            <!-- Loading State -->
+            <div *ngIf="isLoading" class="kd-canvas-loading">
+              <mat-spinner diameter="44"></mat-spinner>
+              <span>Discovering cluster topology...</span>
             </div>
 
-            <!-- Error message if failed -->
-            <div class="kd-investigation-error" *ngIf="investigationError">
-              <mat-icon color="warn">error_outline</mat-icon>
-              <span>{{ investigationError }}</span>
+            <!-- Empty State -->
+            <div *ngIf="!isLoading && layoutNodes.length === 0" class="kd-canvas-empty">
+              <mat-icon>device_hub</mat-icon>
+              <p>No resources found in cluster matching current filters.</p>
             </div>
 
-            <!-- Streaming or completed markdown analysis -->
-            <div class="kd-investigation-content" *ngIf="investigationText">
-              <div class="kd-markdown" [innerHTML]="investigationText | kdMarkdown"></div>
-              <span class="kd-streaming-cursor" *ngIf="isInvestigating"></span>
-            </div>
+            <!-- SVG Graph Layer -->
+            <svg
+              *ngIf="layoutNodes.length > 0"
+              class="kd-topology-svg"
+              [attr.width]="svgWidth"
+              [attr.height]="svgHeight"
+            >
+              <defs>
+                <marker
+                  id="topo-arrow"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255, 255, 255, 0.45)" />
+                </marker>
+                <marker
+                  id="topo-arrow-active"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#00bcd4" />
+                </marker>
+              </defs>
 
-            <!-- Root cause callout if identified -->
-            <div class="kd-rootcause-card" *ngIf="investigationResult?.rootCause">
-              <div class="kd-rootcause-header">
-                <mat-icon color="warn">warning</mat-icon>
-                <span>Root Cause</span>
+              <g [attr.transform]="'translate(' + panX + ',' + panY + ') scale(' + zoomScale + ')'">
+                <!-- Connecting Edges -->
+                <g class="svg-edges-layer">
+                  <g *ngFor="let edge of layoutEdges" class="svg-edge-group">
+                    <path
+                      [attr.d]="edge.path"
+                      class="svg-edge-path"
+                      [class.selected-edge]="selectedNode?.id === edge.source || selectedNode?.id === edge.target"
+                      marker-end="url(#topo-arrow)"
+                    />
+                    <text
+                      *ngIf="edge.label"
+                      [attr.x]="edge.midX"
+                      [attr.y]="edge.midY"
+                      class="svg-edge-label"
+                    >
+                      {{ edge.label }}
+                    </text>
+                  </g>
+                </g>
+
+                <!-- Graph Nodes -->
+                <g class="svg-nodes-layer">
+                  <g
+                    *ngFor="let node of layoutNodes"
+                    [attr.transform]="'translate(' + node.x + ',' + node.y + ')'"
+                    class="svg-node-group"
+                    [class.selected-node]="selectedNode?.id === node.id"
+                    (click)="selectNode(node); $event.stopPropagation()"
+                  >
+                    <!-- Node Background Card -->
+                    <rect
+                      [attr.width]="node.width"
+                      [attr.height]="node.height"
+                      rx="8"
+                      class="node-rect"
+                      [class]="'kind-' + node.kind.toLowerCase()"
+                    />
+
+                    <!-- Status Dot -->
+                    <circle cx="16" cy="18" r="4.5" [class]="'status-circle ' + getStatusClass(node.status)" />
+
+                    <!-- Kind Badge Text -->
+                    <text x="28" y="22" class="node-kind-title">{{ node.kind | uppercase }}</text>
+
+                    <!-- Node Name -->
+                    <text x="16" y="42" class="node-name-title">{{ node.shortName }}</text>
+
+                    <!-- Meta subtitle (ports / replicas / podIP / status) -->
+                    <text x="16" y="58" class="node-meta-subtitle">
+                      {{ node.properties?.ports || node.properties?.replicas || node.properties?.podIP || node.status }}
+                    </text>
+                  </g>
+                </g>
+              </g>
+            </svg>
+
+            <!-- Slide-over Inspector Drawer Docked Inside Canvas (Native Kubernetes Dashboard UI) -->
+            <div
+              *ngIf="selectedNode"
+              class="kd-node-inspector"
+            >
+              <div class="kd-inspector-header">
+                <div class="kd-inspector-title-group">
+                  <div class="kd-inspector-meta">
+                    <span class="kd-kind-label">{{ selectedNode.kind }}</span>
+                    <span class="kd-bullet">&bull;</span>
+                    <span>{{ selectedNode.namespace || 'Cluster-Wide' }}</span>
+                  </div>
+                  <h3 class="kd-inspector-name">
+                    <a
+                      *ngIf="getResourceHref(selectedNode).length > 0; else noLink"
+                      [routerLink]="getResourceHref(selectedNode)"
+                      title="Open resource in Kubernetes Dashboard"
+                    >
+                      {{ selectedNode.name }}
+                    </a>
+                    <ng-template #noLink>{{ selectedNode.name }}</ng-template>
+                  </h3>
+                </div>
+                <button mat-icon-button (click)="closeDrawer()" title="Close inspector">
+                  <mat-icon>close</mat-icon>
+                </button>
               </div>
-              <div class="kd-markdown" [innerHTML]="investigationResult.rootCause | kdMarkdown"></div>
+
+              <mat-divider></mat-divider>
+
+              <div class="kd-inspector-body">
+                <!-- Live Ingested Telemetry (Pod CPU & Memory) -->
+                <div class="kd-inspector-section kd-telemetry-section" *ngIf="hasTelemetry(selectedNode)">
+                  <div class="kd-section-header">Live Telemetry Metrics</div>
+                  <div class="kd-telemetry-chips">
+                    <div class="kd-metric-pill" *ngIf="getPodMetricDisplay(selectedNode).cpu">
+                      <mat-icon inline>speed</mat-icon>
+                      <span class="label">CPU:</span>
+                      <span class="value">{{ getPodMetricDisplay(selectedNode).cpu }}</span>
+                    </div>
+                    <div class="kd-metric-pill" *ngIf="getPodMetricDisplay(selectedNode).memory">
+                      <mat-icon inline>memory</mat-icon>
+                      <span class="label">Memory:</span>
+                      <span class="value">{{ getPodMetricDisplay(selectedNode).memory }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Service Telemetry & Child Pod Diagnostics -->
+                <div class="kd-inspector-section" *ngIf="isLoadingDiagnosis">
+                  <div class="kd-diagnosis-loading">
+                    <mat-spinner diameter="16"></mat-spinner>
+                    <span>Loading correlated service telemetry &amp; logs...</span>
+                  </div>
+                </div>
+
+                <div class="kd-inspector-section" *ngIf="serviceDiagnosis && serviceDiagnosis.pods?.length > 0">
+                  <mat-divider class="kd-section-divider"></mat-divider>
+                  <div class="kd-section-header">
+                    Correlated Workload Pods ({{ serviceDiagnosis.pods.length }})
+                  </div>
+                  <div class="kd-diag-pod-list">
+                    <div class="kd-diag-pod-item" *ngFor="let pod of serviceDiagnosis.pods">
+                      <div class="pod-info">
+                        <span class="pod-name">{{ pod.name }}</span>
+                        <span class="pod-status" [class]="getStatusClass(pod.status)">{{ pod.status }}</span>
+                      </div>
+                      <div class="pod-metrics" *ngIf="pod.properties?.cpuMilli || pod.properties?.memoryMi">
+                        <span *ngIf="pod.properties?.cpuMilli" class="metric-tag">{{ pod.properties.cpuMilli }}m CPU</span>
+                        <span *ngIf="pod.properties?.memoryMi" class="metric-tag">{{ pod.properties.memoryMi }}Mi Mem</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Recent Pod Ingested Log Events -->
+                <div class="kd-inspector-section" *ngIf="serviceDiagnosis && serviceDiagnosis.logEvents?.length > 0">
+                  <mat-divider class="kd-section-divider"></mat-divider>
+                  <div class="kd-section-header">
+                    Recent Pod Log Events ({{ serviceDiagnosis.logEvents.length }})
+                  </div>
+                  <div class="kd-log-event-list">
+                    <div class="kd-log-event-item" *ngFor="let ev of serviceDiagnosis.logEvents">
+                      <div class="log-meta">
+                        <span class="log-level" [class]="'level-' + (ev.level || 'warn')">{{ ev.level | uppercase }}</span>
+                        <span class="log-pod">{{ ev.pod }}</span>
+                      </div>
+                      <div class="log-msg font-mono">{{ ev.message }}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Resource Properties -->
+                <div class="kd-inspector-section">
+                  <mat-divider class="kd-section-divider"></mat-divider>
+                  <div class="kd-section-header">Resource Properties</div>
+                  <div class="kd-props-table">
+                    <div class="kd-prop-row">
+                      <span class="kd-prop-label">Status</span>
+                      <span class="kd-prop-val status-val" [class]="getStatusClass(selectedNode.status)">
+                        {{ selectedNode.status }}
+                      </span>
+                    </div>
+                    <div class="kd-prop-row" *ngIf="selectedNode.group">
+                      <span class="kd-prop-label">Application</span>
+                      <span class="kd-prop-val">{{ selectedNode.group }}</span>
+                    </div>
+                    <div class="kd-prop-row" *ngFor="let p of getPropertiesList(selectedNode)">
+                      <span class="kd-prop-label">{{ p.key }}</span>
+                      <span class="kd-prop-val font-mono">{{ p.value }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Inbound Routes -->
+                <div class="kd-inspector-section" *ngIf="getInboundEdges(selectedNode.id).length > 0">
+                  <mat-divider class="kd-section-divider"></mat-divider>
+                  <div class="kd-section-header">
+                    Inbound Routes ({{ getInboundEdges(selectedNode.id).length }})
+                  </div>
+                  <div class="kd-conn-list">
+                    <div class="kd-conn-item" *ngFor="let inEdge of getInboundEdges(selectedNode.id)">
+                      <mat-icon inline class="kd-conn-icon">arrow_downward</mat-icon>
+                      <span class="kd-conn-text">{{ inEdge.source }}</span>
+                      <span *ngIf="inEdge.port" class="kd-conn-port">:{{ inEdge.port }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Outbound Dependencies -->
+                <div class="kd-inspector-section" *ngIf="getOutboundEdges(selectedNode.id).length > 0">
+                  <mat-divider class="kd-section-divider"></mat-divider>
+                  <div class="kd-section-header">
+                    Outbound Dependencies ({{ getOutboundEdges(selectedNode.id).length }})
+                  </div>
+                  <div class="kd-conn-list">
+                    <div class="kd-conn-item" *ngFor="let outEdge of getOutboundEdges(selectedNode.id)">
+                      <mat-icon inline class="kd-conn-icon">arrow_upward</mat-icon>
+                      <span class="kd-conn-text">{{ outEdge.target }}</span>
+                      <span *ngIf="outEdge.type" class="kd-conn-type">({{ outEdge.type }})</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Inline Autonomous AI Investigation Section -->
+                <div
+                  class="kd-inspector-section kd-investigation-section"
+                  *ngIf="isInvestigating || investigationText || investigationResult || investigationError"
+                >
+                  <mat-divider class="kd-section-divider"></mat-divider>
+                  <div class="kd-section-header kd-ai-header">
+                    <div class="kd-ai-header-left">
+                      <mat-icon inline>memory</mat-icon>
+                      <span>Live AI Diagnosis</span>
+                    </div>
+                    <button
+                      mat-icon-button
+                      *ngIf="isInvestigating"
+                      (click)="stopInvestigation()"
+                      class="kd-stop-btn"
+                      title="Stop Analysis"
+                    >
+                      <mat-icon>stop</mat-icon>
+                    </button>
+                  </div>
+
+                  <div class="kd-investigation-loading" *ngIf="isInvestigating && !investigationText">
+                    <mat-spinner diameter="18" color="primary"></mat-spinner>
+                    <span>Inspecting live telemetry, conditions &amp; logs...</span>
+                  </div>
+
+                  <div class="kd-investigation-error" *ngIf="investigationError">
+                    <mat-icon color="warn">error_outline</mat-icon>
+                    <span>{{ investigationError }}</span>
+                  </div>
+
+                  <div class="kd-investigation-content" *ngIf="investigationText">
+                    <div class="kd-markdown" [innerHTML]="investigationText | kdMarkdown"></div>
+                    <span class="kd-streaming-cursor" *ngIf="isInvestigating"></span>
+                  </div>
+
+                  <div class="kd-rootcause-card" *ngIf="investigationResult?.rootCause">
+                    <div class="kd-rootcause-header">
+                      <mat-icon color="warn">warning</mat-icon>
+                      <span>Root Cause</span>
+                    </div>
+                    <div class="kd-markdown" [innerHTML]="investigationResult.rootCause | kdMarkdown"></div>
+                  </div>
+                </div>
+              </div>
+
+              <mat-divider></mat-divider>
+
+              <div class="kd-inspector-actions">
+                <a
+                  mat-button
+                  *ngIf="getResourceHref(selectedNode).length > 0"
+                  [routerLink]="getResourceHref(selectedNode)"
+                  class="kd-detail-btn"
+                  title="Open in Kubernetes Dashboard"
+                >
+                  <mat-icon>open_in_new</mat-icon>
+                  <span>View Details</span>
+                </a>
+                <button
+                  mat-stroked-button
+                  color="primary"
+                  (click)="runRCA(selectedNode)"
+                >
+                  <mat-spinner diameter="16" *ngIf="isInvestigating"></mat-spinner>
+                  <mat-icon *ngIf="!isInvestigating">memory</mat-icon>
+                  <span>{{ isInvestigating ? 'Stop' : (investigationText ? 'Re-analyze' : 'Investigate') }}</span>
+                </button>
+              </div>
             </div>
+          </div>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- TAB 2: AI OBSERVABILITY & METRICS QUERY -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="kd-tab-icon">search</mat-icon>
+        <span>AI Observability Query</span>
+      </ng-template>
+
+      <div class="kd-tab-content">
+        <mat-card class="kd-traffic-card kd-query-card">
+          <!-- Curated Quick-Query Questions (Catalog) -->
+          <div class="kd-catalog-chips-bar" *ngIf="catalog.length > 0">
+            <span class="kd-catalog-label">Quick Observability Questions:</span>
+            <div class="kd-chips-container">
+              <button
+                mat-stroked-button
+                type="button"
+                *ngFor="let c of catalog"
+                (click)="runCatalogQuery(c)"
+                class="kd-query-chip"
+                [class.active-chip]="selectedCatalogName === c.name"
+                [title]="c.description"
+              >
+                <mat-icon inline>build</mat-icon>
+                <span>{{ c.name }}</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Natural Language Search Query Bar -->
+          <div class="kd-query-input-section">
+            <mat-form-field appearance="outline" class="kd-full-width kd-search-textarea">
+              <mat-label>Ask a question about cluster health, metrics, or relationships</mat-label>
+              <textarea
+                matInput
+                rows="2"
+                [(ngModel)]="nlQuestion"
+                (keydown.enter)="$event.preventDefault(); runNLQuery()"
+                placeholder="e.g. Which pods are consuming the most CPU? Or: Find single replica workloads."
+              ></textarea>
+              <button
+                mat-button
+                *ngIf="nlQuestion"
+                matSuffix
+                mat-icon-button
+                aria-label="Clear"
+                (click)="nlQuestion=''"
+              >
+                <mat-icon>close</mat-icon>
+              </button>
+            </mat-form-field>
+
+            <div class="kd-query-actions">
+              <button
+                mat-raised-button
+                color="primary"
+                (click)="runNLQuery()"
+                [disabled]="isRunningNL || !nlQuestion.trim()"
+                class="kd-run-btn"
+              >
+                <mat-spinner *ngIf="isRunningNL" diameter="18" color="accent"></mat-spinner>
+                <mat-icon *ngIf="!isRunningNL">search</mat-icon>
+                <span>{{ isRunningNL ? 'Executing Query...' : 'Ask Cluster Graph' }}</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Query Error State -->
+          <div *ngIf="queryError" class="kd-query-error-card">
+            <mat-icon color="warn">error_outline</mat-icon>
+            <div class="kd-error-text">{{ queryError }}</div>
+          </div>
+
+          <!-- Query Loading Indicator -->
+          <div *ngIf="isRunningNL" class="kd-query-loading">
+            <mat-spinner diameter="36" color="primary"></mat-spinner>
+            <p>Translating natural language &amp; querying FalkorDB telemetry graph...</p>
+          </div>
+
+          <!-- Generated Observability Cypher Query Banner (Prominently displayed) -->
+          <div class="kd-cypher-banner" *ngIf="nlCypher">
+            <div class="kd-cypher-banner-header">
+              <div class="kd-cypher-banner-title">
+                <mat-icon color="primary">code</mat-icon>
+                <span>Generated Observability Cypher Query</span>
+                <span class="kd-ro-badge">READ-ONLY</span>
+              </div>
+              <div class="kd-cypher-banner-actions">
+                <button
+                  mat-button
+                  color="primary"
+                  (click)="copyToClipboard(nlCypher)"
+                  title="Copy Cypher to Clipboard"
+                >
+                  <mat-icon>{{ copiedCypher ? 'done' : 'content_copy' }}</mat-icon>
+                  <span>{{ copiedCypher ? 'Copied' : 'Copy Query' }}</span>
+                </button>
+              </div>
+            </div>
+            <div class="kd-cypher-code-view">
+              <code class="font-mono">{{ nlCypher }}</code>
+            </div>
+          </div>
+
+          <!-- Structured Results Section (Dynamic Bar Graph + Native Data Table) -->
+          <div *ngIf="!isRunningNL && queryColumns.length > 0" class="kd-results-section">
+            <div class="kd-results-header">
+              <div class="kd-results-title">
+                <mat-icon color="primary">assessment</mat-icon>
+                <h3>Query Results</h3>
+                <span class="kd-count-badge">{{ queryRows.length }} {{ queryRows.length === 1 ? 'record' : 'records' }}</span>
+              </div>
+
+              <!-- View Switcher -->
+              <div class="kd-view-switcher" *ngIf="getMetricSummary(queryColumns, queryRows).hasNumeric">
+                <button
+                  mat-button
+                  [class.active]="queryViewMode === 'graph'"
+                  (click)="queryViewMode = 'graph'"
+                >
+                  <mat-icon inline>bar_chart</mat-icon>
+                  <span>Graph</span>
+                </button>
+                <button
+                  mat-button
+                  [class.active]="queryViewMode === 'table'"
+                  (click)="queryViewMode = 'table'"
+                >
+                  <mat-icon inline>table_chart</mat-icon>
+                  <span>Table</span>
+                </button>
+                <button
+                  mat-button
+                  [class.active]="queryViewMode === 'both'"
+                  (click)="queryViewMode = 'both'"
+                >
+                  <mat-icon inline>view_agenda</mat-icon>
+                  <span>Both</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- KPI Summary Bar (when numeric metric found) -->
+            <div
+              *ngIf="(queryViewMode === 'graph' || queryViewMode === 'both') && getMetricSummary(queryColumns, queryRows).hasNumeric"
+              class="kd-metric-summary-bar"
+            >
+              <div class="kd-metric-chip">
+                <span class="kd-chip-label">Metric:</span>
+                <span class="kd-chip-val">{{ getMetricSummary(queryColumns, queryRows).metricColumn }}</span>
+              </div>
+              <div class="kd-metric-chip">
+                <span class="kd-chip-label">Peak:</span>
+                <span class="kd-chip-val">{{ getMetricSummary(queryColumns, queryRows).max }}</span>
+              </div>
+              <div class="kd-metric-chip">
+                <span class="kd-chip-label">Average:</span>
+                <span class="kd-chip-val">{{ getMetricSummary(queryColumns, queryRows).avg }}</span>
+              </div>
+            </div>
+
+            <!-- Visual Horizontal Bar Graph -->
+            <div
+              *ngIf="(queryViewMode === 'graph' || queryViewMode === 'both') && getMetricSummary(queryColumns, queryRows).hasNumeric"
+              class="kd-graph-bars-list"
+            >
+              <div *ngFor="let bar of getMetricSummary(queryColumns, queryRows).bars" class="kd-graph-bar-row">
+                <div class="kd-bar-info">
+                  <span class="kd-bar-label font-mono">{{ bar.label }}</span>
+                  <span class="kd-bar-ns font-mono" *ngIf="bar.sublabel">{{ bar.sublabel }}</span>
+                </div>
+                <div class="kd-bar-track">
+                  <div class="kd-bar-fill" [ngClass]="bar.colorClass" [style.width.%]="bar.percent"></div>
+                </div>
+                <span class="kd-bar-val font-mono">{{ bar.displayValue }}</span>
+              </div>
+            </div>
+
+            <!-- Crisp Styled Native Table (Guaranteed 100% render, zero blank boxes) -->
+            <div *ngIf="queryViewMode === 'table' || queryViewMode === 'both'" class="kd-table-responsive">
+              <table class="kd-styled-table">
+                <thead>
+                  <tr>
+                    <th *ngFor="let col of queryColumns">{{ col }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let row of queryRows">
+                    <td *ngFor="let cell of row" class="font-mono">
+                      <span [ngClass]="getStatusClass(cell)">{{ cell || '-' }}</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Save as Custom Dashboard Widget Card -->
+            <div class="kd-save-card">
+              <div class="kd-save-title">
+                <mat-icon color="primary">dashboard</mat-icon>
+                <span>Save Query as Reusable Dashboard Widget</span>
+              </div>
+
+              <div class="kd-save-target-selector" *ngIf="dashboards.length > 0">
+                <span class="kd-selector-label">Target:</span>
+                <button
+                  mat-stroked-button
+                  [class.active-choice]="saveTargetDashboard === 'NEW'"
+                  (click)="saveTargetDashboard = 'NEW'"
+                  class="kd-choice-btn"
+                >
+                  Create New Dashboard
+                </button>
+                <button
+                  mat-stroked-button
+                  [class.active-choice]="saveTargetDashboard !== 'NEW'"
+                  (click)="saveTargetDashboard = dashboards[0].name"
+                  class="kd-choice-btn"
+                >
+                  Add to Existing Dashboard
+                </button>
+              </div>
+
+              <div class="kd-save-form">
+                <!-- If Creating New Dashboard -->
+                <ng-container *ngIf="saveTargetDashboard === 'NEW' || dashboards.length === 0">
+                  <mat-form-field appearance="outline" class="kd-save-name">
+                    <mat-label>Dashboard Name</mat-label>
+                    <input matInput [(ngModel)]="newDashboardName" placeholder="e.g. Cluster Health Overview" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline" class="kd-save-desc">
+                    <mat-label>Description (optional)</mat-label>
+                    <input matInput [(ngModel)]="newDashboardDescription" placeholder="Description of this query" />
+                  </mat-form-field>
+                </ng-container>
+
+                <!-- If Adding to Existing Dashboard -->
+                <ng-container *ngIf="saveTargetDashboard !== 'NEW' && dashboards.length > 0">
+                  <mat-form-field appearance="outline" class="kd-save-name">
+                    <mat-label>Select Existing Dashboard</mat-label>
+                    <mat-select [(value)]="saveTargetDashboard">
+                      <mat-option *ngFor="let d of dashboards" [value]="d.name">
+                        {{ d.name }} ({{ d.queries?.length || 0 }} queries)
+                      </mat-option>
+                    </mat-select>
+                  </mat-form-field>
+                </ng-container>
+
+                <mat-form-field appearance="outline" class="kd-save-title-input">
+                  <mat-label>Widget Title</mat-label>
+                  <input matInput [(ngModel)]="widgetSaveTitle" placeholder="e.g. Top CPU Workloads" />
+                </mat-form-field>
+
+                <button
+                  mat-raised-button
+                  color="primary"
+                  type="button"
+                  (click)="saveCurrentAsDashboard()"
+                  [disabled]="isSavingWidget || (saveTargetDashboard === 'NEW' ? !newDashboardName.trim() : !saveTargetDashboard)"
+                  class="kd-save-submit"
+                >
+                  <mat-icon *ngIf="!isSavingWidget">save</mat-icon>
+                  <mat-spinner diameter="16" *ngIf="isSavingWidget" color="accent"></mat-spinner>
+                  <span>{{ isSavingWidget ? 'Saving...' : 'Save to Dashboard' }}</span>
+                </button>
+              </div>
+
+              <div *ngIf="saveSuccessMessage" class="kd-save-success-banner">
+                <div class="kd-success-left">
+                  <mat-icon>check_circle</mat-icon>
+                  <span>{{ saveSuccessMessage }}</span>
+                </div>
+                <button mat-stroked-button color="accent" (click)="goToDashboards()">
+                  <mat-icon>arrow_forward</mat-icon>
+                  <span>View in Custom Dashboards</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Empty Result State -->
+          <div *ngIf="!isRunningNL && queryColumns.length === 0 && !queryError && nlCypher" class="kd-empty-results">
+            <mat-icon>search_off</mat-icon>
+            <h4>No records returned</h4>
+            <p>The query executed successfully on FalkorDB but found 0 matching nodes in the cluster.</p>
+          </div>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- TAB 3: CUSTOM DASHBOARDS -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="kd-tab-icon">dashboard</mat-icon>
+        <span>Custom Dashboards ({{ dashboards.length }})</span>
+      </ng-template>
+
+      <div class="kd-tab-content">
+        <!-- Top Toolbar with "+ Add Dashboard" Button -->
+        <div class="kd-dashboards-toolbar">
+          <div class="kd-dashboards-title-group">
+            <mat-icon color="primary">dashboard</mat-icon>
+            <h3>Custom Observability Dashboards</h3>
+            <span class="kd-dash-count-badge">{{ dashboards.length }}</span>
+          </div>
+
+          <div class="kd-dashboards-toolbar-actions">
+            <button
+              mat-raised-button
+              color="primary"
+              (click)="openAddDashboard()"
+              *ngIf="!isAddingDashboard"
+              class="kd-add-dashboard-btn"
+            >
+              <mat-icon>add</mat-icon>
+              <span>Add Dashboard</span>
+            </button>
           </div>
         </div>
 
-        <mat-divider></mat-divider>
+        <!-- Inline Form for Creating New Dashboard -->
+        <mat-card *ngIf="isAddingDashboard" class="kd-traffic-card kd-add-dashboard-card">
+          <div class="kd-form-header">
+            <mat-icon color="primary">add_to_photos</mat-icon>
+            <h4>Create New Observability Dashboard</h4>
+          </div>
 
-        <div class="kd-inspector-actions">
-          <a
-            mat-button
-            *ngIf="getResourceHref(selectedNode).length > 0"
-            [routerLink]="getResourceHref(selectedNode)"
-            class="kd-detail-btn"
-            title="Open in Kubernetes Dashboard"
-          >
-            <mat-icon>open_in_new</mat-icon>
-            <span>View Details</span>
-          </a>
-          <button
-            mat-stroked-button
-            color="primary"
-            (click)="runRCA(selectedNode)"
-          >
-            <mat-spinner diameter="16" *ngIf="isInvestigating"></mat-spinner>
-            <mat-icon *ngIf="!isInvestigating">memory</mat-icon>
-            <span>{{ isInvestigating ? 'Stop' : (investigationText ? 'Re-analyze' : 'Investigate') }}</span>
-          </button>
+          <div class="kd-add-dashboard-form">
+            <mat-form-field appearance="outline" class="kd-full-width">
+              <mat-label>Dashboard Name</mat-label>
+              <input matInput [(ngModel)]="newDashboardName" placeholder="e.g. Workloads &amp; Resource Pressure" />
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="kd-full-width">
+              <mat-label>Description (optional)</mat-label>
+              <input matInput [(ngModel)]="newDashboardDescription" placeholder="Observability queries for diagnosing nodes and workloads" />
+            </mat-form-field>
+
+            <div class="kd-form-subheading">
+              <mat-icon inline>assessment</mat-icon>
+              <span>Initial Query Widget (Optional)</span>
+            </div>
+
+            <mat-form-field appearance="outline" class="kd-full-width">
+              <mat-label>Query Widget Title</mat-label>
+              <input matInput [(ngModel)]="newWidgetTitle" placeholder="e.g. Top CPU Pods" />
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="kd-full-width">
+              <mat-label>Cypher Query</mat-label>
+              <textarea
+                matInput
+                rows="3"
+                [(ngModel)]="newWidgetCypher"
+                placeholder="MATCH (p:Pod) RETURN p.name, p.namespace, COALESCE(p.cpuMilli, 0) AS cpu_milli ORDER BY cpu_milli DESC LIMIT 10"
+              ></textarea>
+            </mat-form-field>
+
+            <div class="kd-form-actions">
+              <button mat-button (click)="cancelAddDashboard()">Cancel</button>
+              <button
+                mat-raised-button
+                color="primary"
+                (click)="saveNewDashboard()"
+                [disabled]="!newDashboardName.trim()"
+              >
+                <mat-icon>save</mat-icon>
+                <span>Create Dashboard</span>
+              </button>
+            </div>
+          </div>
+        </mat-card>
+
+        <!-- Zero Dashboards State -->
+        <mat-card *ngIf="dashboards.length === 0 && !isAddingDashboard" class="kd-traffic-card kd-dashboards-empty">
+          <mat-icon class="kd-empty-icon">dashboard</mat-icon>
+          <h3>No Saved Dashboards Yet</h3>
+          <p>
+            Create your first observability dashboard by clicking <strong>Add Dashboard</strong> above or by asking cluster questions in the
+            <strong>AI Observability Query</strong> tab.
+          </p>
+          <div class="kd-empty-actions">
+            <button mat-raised-button color="primary" (click)="openAddDashboard()">
+              <mat-icon>add</mat-icon>
+              <span>Add Dashboard</span>
+            </button>
+            <button mat-stroked-button (click)="selectedTabIndex = 1">
+              <mat-icon>search</mat-icon>
+              <span>Open AI Query</span>
+            </button>
+          </div>
+        </mat-card>
+
+        <!-- Dashboards Grid -->
+        <div *ngIf="dashboards.length > 0" class="kd-dashboards-grid">
+          <mat-card *ngFor="let d of dashboards" class="kd-traffic-card kd-dashboard-card">
+            <div class="kd-dashboard-header">
+              <div class="kd-dashboard-info">
+                <div class="kd-dash-name">
+                  <mat-icon color="primary">dashboard</mat-icon>
+                  <h3>{{ d.name }}</h3>
+                  <span class="kd-count-badge">{{ d.queries?.length || 0 }} {{ d.queries?.length === 1 ? 'widget' : 'widgets' }}</span>
+                </div>
+                <p class="kd-dash-desc" *ngIf="d.description">{{ d.description }}</p>
+              </div>
+
+              <div class="kd-dashboard-actions">
+                <button
+                  mat-stroked-button
+                  color="primary"
+                  (click)="openAddQuery(d.name)"
+                  *ngIf="addingQueryDashboardName !== d.name"
+                  title="Add a query widget to this dashboard"
+                >
+                  <mat-icon>add</mat-icon>
+                  <span>Add Query</span>
+                </button>
+                <button
+                  mat-stroked-button
+                  (click)="runAllQueriesInDashboard(d)"
+                  title="Execute all queries in this dashboard"
+                >
+                  <mat-icon>refresh</mat-icon>
+                  <span>Run All</span>
+                </button>
+                <button
+                  mat-icon-button
+                  color="warn"
+                  (click)="deleteDashboard(d.name)"
+                  title="Delete Dashboard"
+                >
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </div>
+            </div>
+
+            <!-- Inline "+ Add Query" form for this specific dashboard -->
+            <div *ngIf="addingQueryDashboardName === d.name" class="kd-add-query-inline-card">
+              <div class="kd-inline-form-header">
+                <mat-icon color="primary">add_circle_outline</mat-icon>
+                <strong>Add Query Widget to '{{ d.name }}'</strong>
+              </div>
+              <div class="kd-inline-form-body">
+                <mat-form-field appearance="outline" class="kd-full-width">
+                  <mat-label>Widget Title</mat-label>
+                  <input matInput [(ngModel)]="newWidgetTitle" placeholder="e.g. Workloads &amp; Replicas" />
+                </mat-form-field>
+                <mat-form-field appearance="outline" class="kd-full-width">
+                  <mat-label>Cypher Query</mat-label>
+                  <textarea
+                    matInput
+                    rows="3"
+                    [(ngModel)]="newWidgetCypher"
+                    placeholder="MATCH (d:Deployment) RETURN d.name, d.namespace, d.replicas, d.desired, d.available, d.status"
+                  ></textarea>
+                </mat-form-field>
+                <div class="kd-form-actions">
+                  <button mat-button (click)="cancelAddQuery()">Cancel</button>
+                  <button
+                    mat-raised-button
+                    color="primary"
+                    (click)="saveQueryToExistingDashboard(d)"
+                    [disabled]="!newWidgetCypher.trim()"
+                  >
+                    <mat-icon>save</mat-icon>
+                    <span>Save Query</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <mat-divider></mat-divider>
+
+            <!-- Dashboard Query Widgets List -->
+            <div class="kd-widgets-container">
+              <div *ngIf="!d.queries || d.queries.length === 0" class="kd-dashboard-no-widgets">
+                <mat-icon>info</mat-icon>
+                <span>No query widgets added to this dashboard yet. Click <strong>Add Query</strong> above to add one.</span>
+              </div>
+
+              <div *ngFor="let q of d.queries; let qIdx = index" class="kd-widget-card">
+                <div class="kd-widget-header">
+                  <div class="kd-widget-title-box">
+                    <mat-icon inline>assessment</mat-icon>
+                    <span class="kd-widget-title">{{ q.title }}</span>
+                  </div>
+
+                  <div class="kd-widget-actions">
+                    <button
+                      mat-stroked-button
+                      color="primary"
+                      (click)="runDashboardWidget(d.name, qIdx, q.cypher)"
+                      [disabled]="dashboardResults[d.name + '_' + qIdx]?.isLoading"
+                      class="kd-widget-run-btn"
+                    >
+                      <mat-spinner
+                        *ngIf="dashboardResults[d.name + '_' + qIdx]?.isLoading"
+                        diameter="16"
+                        color="accent"
+                      ></mat-spinner>
+                      <mat-icon *ngIf="!dashboardResults[d.name + '_' + qIdx]?.isLoading">play_arrow</mat-icon>
+                      <span>Run Query</span>
+                    </button>
+                    <button
+                      mat-icon-button
+                      color="warn"
+                      (click)="deleteQueryFromDashboard(d, qIdx)"
+                      title="Remove this query from dashboard"
+                    >
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Cypher snippet preview inside widget -->
+                <div class="kd-widget-cypher-preview">
+                  <code>{{ q.cypher }}</code>
+                </div>
+
+                <!-- Structured In-Card Visual Graph & Table for Widget Result -->
+                <div
+                  *ngIf="dashboardResults[d.name + '_' + qIdx] && dashboardResults[d.name + '_' + qIdx].columns?.length > 0"
+                  class="kd-widget-results"
+                >
+                  <div class="kd-widget-result-meta">
+                    <span class="kd-count-badge">
+                      {{ dashboardResults[d.name + '_' + qIdx].rows?.length || 0 }}
+                      {{ (dashboardResults[d.name + '_' + qIdx].rows?.length === 1) ? 'record' : 'records' }}
+                    </span>
+
+                    <!-- View Switcher -->
+                    <div
+                      class="kd-view-switcher"
+                      *ngIf="getMetricSummary(dashboardResults[d.name + '_' + qIdx].columns, dashboardResults[d.name + '_' + qIdx].rows).hasNumeric"
+                    >
+                      <button
+                        mat-button
+                        [class.active]="getWidgetViewMode(d.name, qIdx) === 'graph'"
+                        (click)="setWidgetViewMode(d.name, qIdx, 'graph')"
+                      >
+                        <mat-icon inline>bar_chart</mat-icon>
+                        <span>Graph</span>
+                      </button>
+                      <button
+                        mat-button
+                        [class.active]="getWidgetViewMode(d.name, qIdx) === 'table'"
+                        (click)="setWidgetViewMode(d.name, qIdx, 'table')"
+                      >
+                        <mat-icon inline>table_chart</mat-icon>
+                        <span>Table</span>
+                      </button>
+                      <button
+                        mat-button
+                        [class.active]="getWidgetViewMode(d.name, qIdx) === 'both'"
+                        (click)="setWidgetViewMode(d.name, qIdx, 'both')"
+                      >
+                        <mat-icon inline>view_agenda</mat-icon>
+                        <span>Both</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- KPI Summary Bar (when numeric metric found) -->
+                  <div
+                    *ngIf="(getWidgetViewMode(d.name, qIdx) === 'graph' || getWidgetViewMode(d.name, qIdx) === 'both') && getMetricSummary(dashboardResults[d.name + '_' + qIdx].columns, dashboardResults[d.name + '_' + qIdx].rows).hasNumeric"
+                    class="kd-metric-summary-bar"
+                  >
+                    <div class="kd-metric-chip">
+                      <span class="kd-chip-label">Metric:</span>
+                      <span class="kd-chip-val">{{ getMetricSummary(dashboardResults[d.name + '_' + qIdx].columns, dashboardResults[d.name + '_' + qIdx].rows).metricColumn }}</span>
+                    </div>
+                    <div class="kd-metric-chip">
+                      <span class="kd-chip-label">Peak:</span>
+                      <span class="kd-chip-val">{{ getMetricSummary(dashboardResults[d.name + '_' + qIdx].columns, dashboardResults[d.name + '_' + qIdx].rows).max }}</span>
+                    </div>
+                    <div class="kd-metric-chip">
+                      <span class="kd-chip-label">Average:</span>
+                      <span class="kd-chip-val">{{ getMetricSummary(dashboardResults[d.name + '_' + qIdx].columns, dashboardResults[d.name + '_' + qIdx].rows).avg }}</span>
+                    </div>
+                  </div>
+
+                  <!-- Visual Horizontal Bar Graph -->
+                  <div
+                    *ngIf="(getWidgetViewMode(d.name, qIdx) === 'graph' || getWidgetViewMode(d.name, qIdx) === 'both') && getMetricSummary(dashboardResults[d.name + '_' + qIdx].columns, dashboardResults[d.name + '_' + qIdx].rows).hasNumeric"
+                    class="kd-graph-bars-list"
+                  >
+                    <div
+                      *ngFor="let bar of getMetricSummary(dashboardResults[d.name + '_' + qIdx].columns, dashboardResults[d.name + '_' + qIdx].rows).bars"
+                      class="kd-graph-bar-row"
+                    >
+                      <div class="kd-bar-info">
+                        <span class="kd-bar-label font-mono">{{ bar.label }}</span>
+                        <span class="kd-bar-ns font-mono" *ngIf="bar.sublabel">{{ bar.sublabel }}</span>
+                      </div>
+                      <div class="kd-bar-track">
+                        <div class="kd-bar-fill" [ngClass]="bar.colorClass" [style.width.%]="bar.percent"></div>
+                      </div>
+                      <span class="kd-bar-val font-mono">{{ bar.displayValue }}</span>
+                    </div>
+                  </div>
+
+                  <!-- Crisp Styled Native Table (Guaranteed 100% render, zero blank boxes) -->
+                  <div
+                    *ngIf="getWidgetViewMode(d.name, qIdx) === 'table' || getWidgetViewMode(d.name, qIdx) === 'both'"
+                    class="kd-table-responsive"
+                  >
+                    <table class="kd-styled-table">
+                      <thead>
+                        <tr>
+                          <th *ngFor="let col of dashboardResults[d.name + '_' + qIdx].columns">{{ col }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr *ngFor="let row of dashboardResults[d.name + '_' + qIdx].rows">
+                          <td *ngFor="let cell of row" class="font-mono">
+                            <span [ngClass]="getStatusClass(cell)">{{ (cell !== null && cell !== undefined && cell !== '') ? cell : '-' }}</span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <!-- Widget Error State -->
+                <div
+                  *ngIf="dashboardResults[d.name + '_' + qIdx]?.error"
+                  class="kd-widget-error"
+                >
+                  <mat-icon color="warn">error_outline</mat-icon>
+                  <span>{{ dashboardResults[d.name + '_' + qIdx].error }}</span>
+                </div>
+
+                <!-- Widget Empty State (Executed with 0 rows) -->
+                <div
+                  *ngIf="dashboardResults[d.name + '_' + qIdx] && !dashboardResults[d.name + '_' + qIdx].isLoading && dashboardResults[d.name + '_' + qIdx].columns?.length === 0 && !dashboardResults[d.name + '_' + qIdx].error"
+                  class="kd-widget-empty"
+                >
+                  <mat-icon inline>check_circle</mat-icon>
+                  <span>Query returned 0 rows.</span>
+                </div>
+              </div>
+            </div>
+          </mat-card>
         </div>
       </div>
-    </div>
-  </mat-card>
+    </mat-tab>
+  </mat-tab-group>
 </div>

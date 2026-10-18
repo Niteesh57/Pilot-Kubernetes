@@ -18,6 +18,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -127,7 +128,11 @@ func (c *Client) UpsertNode(ctx context.Context, label, name, namespace string, 
 		setParts = append(setParts, fmt.Sprintf("n.namespace = '%s'", escapeCypher(namespace)))
 	}
 	for k, v := range props {
-		setParts = append(setParts, fmt.Sprintf("n.%s = '%s'", k, escapeCypher(v)))
+		if _, err := strconv.ParseInt(v, 10, 64); err == nil && (!strings.HasPrefix(v, "0") || v == "0") {
+			setParts = append(setParts, fmt.Sprintf("n.%s = %s", k, v))
+		} else {
+			setParts = append(setParts, fmt.Sprintf("n.%s = '%s'", k, escapeCypher(v)))
+		}
 	}
 	setClause := strings.Join(setParts, ", ")
 

@@ -27,29 +27,34 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const agentSystemPrompt = `You are an expert autonomous Kubernetes SRE agent in Kubernetes Dashboard.
-You have access to live cluster information, container images, pod logs, events, inter-service network topology, and FalkorDB knowledge graph topology.
-Your goal is to answer the engineer's question or solve the operational problem thoroughly, accurately, and concisely.
+const agentSystemPrompt = `You are an expert autonomous Kubernetes SRE agent powered by FalkorDB graph intelligence.
+You act on connected infrastructure data, performing multi-hop causal reasoning across workloads, configurations, networking, and RBAC permissions.
 
-FalkorDB Graph Schema:
-- Nodes: (:Pod {name, namespace, status, ip}), (:Service {name, namespace, clusterIP}), (:Deployment {name, namespace, replicas}), (:Node {name}), (:Namespace {name})
-- Edges: (:Pod)-[:RUNS_ON]->(:Node), (:Service)-[:ROUTES_TO]->(:Pod), (:Deployment)-[:MANAGES]->(:Pod), (:Pod)-[:COMMUNICATES_WITH]->(:Service)
+Connected Data & Tools:
+You invoke and reason across FalkorDB knowledge graph tools:
+1. falkordb_blast_radius(resource, depth=4): Discovers upstream dependencies (what it needs) and downstream blast radius (what will break).
+2. falkordb_explore(resource): Inspects immediate 1-hop topology neighbors (Pods, Nodes, Services, Namespaces, Storage).
+3. falkordb_service_diagnosis(service): Correlates multi-entity graph paths: (:Service)-[:SELECTS]->(:Pod)-[:EMITTED]->(:LogEvent).
+4. falkordb_attack_paths(namespace): Discovers transitive RBAC privilege escalation chains: (:ServiceAccount)-[:BOUND_BY]->(:RoleBinding)-[:GRANTS]->(:Role).
 
-Guidelines:
-- When asked what a component is used for, explain its architectural role in production, how it integrates with the cluster and Kubernetes Dashboard, its key functions, container specs, and its current health.
-- When diagnosing an issue, identify the specific root cause (e.g. OOMKilled, failing health probe, selector mismatch, network policy block, latency hop) and provide exact remediation steps.
-- If the workload is healthy and the question is informational, directly answer the question in rich Markdown.
-- Provide useful kubectl commands and Cypher queries when relevant.
-- Suggest 2-4 interactive follow-up questions or actions that an SRE engineer might want to ask or execute next (like in Antigravity).
-- Keep responses clean, professional, and well-structured without dumping raw graph arrays or internal structures.
+Operational Decision & Action Guidelines (Track 1 Focus):
+- Multi-Hop Connected Reasoning: Look beyond the immediate symptom. If a Pod is crashing or timing out, traverse 1-4 graph hops upstream to verify if an upstream Service, Secret, ConfigMap, or dependency has failed.
+- Actions Based On What The Graph Shows: Always justify your operational decision based on the graph topology. For example: "Do not restart Pod X (symptom); the graph reveals upstream Service Y has 0 healthy endpoints. Remediation action is targeted at Service Y to prevent cascading failure across 3 dependent workloads."
+- Blast Radius Verification: Quantify the downstream blast radius before recommending any deletion, scale-down, or patch.
+- Cypher Transparency: Provide exact, executable Cypher queries that verify the topological relationship or blast radius in FalkorDB.
+- Suggest 2-4 interactive follow-up actions or remediation confirmations.
 
-Structure your response as JSON with these fields:
-- summary: Clear, insightful answer to the engineer's query in rich Markdown.
-- rootCause: If diagnosing a failure or degraded condition, the specific technical root cause. If healthy or informational, leave empty.
-- commands: Array of useful kubectl commands relevant to the resource.
-- yamlPatches: Array of YAML patch strings if fixes are recommended.
-- cypherQueries: Array of Cypher query strings to inspect topology or blast radius in FalkorDB (e.g. "MATCH (p:Pod {name: '...'})<-[:ROUTES_TO]-(s:Service) RETURN s").
-- followUps: Array of 2-4 interactive follow-up questions or remediation confirmations for the engineer.
+Structure your response strictly as JSON with these fields:
+- summary: Rich Markdown explanation including:
+  * ### 🌐 Connected Graph Analysis: Multi-hop graph findings across upstream causes and downstream blast radius.
+  * ### ⚡ Graph-Informed Action: The precise operational action taken and why the graph structure dictates this specific remediation.
+  * ### 🛡️ Blast Radius Assessment: Summary of dependent workloads protected.
+- rootCause: Specific technical root cause identified from the graph and telemetry (or empty if healthy/informational).
+- graphAction: A concise 1-sentence executive summary of the action taken based on the graph.
+- commands: Array of useful kubectl commands.
+- yamlPatches: Array of YAML patch strings for fixes.
+- cypherQueries: Array of Cypher query strings to inspect topology or blast radius in FalkorDB (e.g. "MATCH (d:Deployment {name: '...'})<-[*1..4]-(dep) RETURN dep").
+- followUps: Array of 2-4 interactive follow-up questions or remediation confirmations.
 Return ONLY valid JSON, no other text.`
 
 // MentionTarget represents a Kubernetes resource mentioned with @kind/name in the chat query.
@@ -598,21 +603,61 @@ func RunAgentQueryWithStream(
 		}
 	}
 
-	// FalkorDB Knowledge Graph Context
+	// FalkorDB Knowledge Graph Context & Graph Algorithms as Tools
+	var toolsInvoked []string
 	if graphCtx != nil {
+		stepGraph := AgentStep{
+			Step:        fmt.Sprintf("%d", len(steps)+1),
+			Description: "FalkorDB Multi-Hop Graph Traversal & Tool Invocations",
+		}
 		var graphSummaries []string
+
 		for _, m := range mentions {
 			resKind := strings.Title(strings.ToLower(m.Kind))
+
+			// Tool 1: falkordb_explore (1-hop neighborhood)
 			if s, err := graphCtx.ContextForResource(ctx, resKind, m.Name, m.Namespace); err == nil && s != "" {
-				graphSummaries = append(graphSummaries, fmt.Sprintf("=== FALKORDB TOPOLOGY FOR @%s/%s ===\n%s", m.Kind, m.Name, s))
+				graphSummaries = append(graphSummaries, fmt.Sprintf("=== FALKORDB TOPOLOGY NEIGHBORHOOD FOR @%s/%s ===\n%s", m.Kind, m.Name, s))
+				toolsInvoked = append(toolsInvoked, fmt.Sprintf("falkordb_explore(@%s/%s)", m.Kind, m.Name))
 			}
-			lowerQ := strings.ToLower(req.Query)
-			if strings.Contains(lowerQ, "blast") || strings.Contains(lowerQ, "impact") || strings.Contains(lowerQ, "depend") || strings.Contains(lowerQ, "who use") || strings.Contains(lowerQ, "what use") {
-				if b, err := graphCtx.BlastRadiusSummary(ctx, resKind, m.Name, m.Namespace); err == nil && b != "" {
-					graphSummaries = append(graphSummaries, fmt.Sprintf("=== FALKORDB BLAST RADIUS FOR @%s/%s ===\n%s", m.Kind, m.Name, b))
+
+			// Tool 2: falkordb_blast_radius (Always run multi-hop 1-to-4 hop dependency & dependent traversal!)
+			if b, err := graphCtx.BlastRadiusSummary(ctx, resKind, m.Name, m.Namespace); err == nil && b != "" {
+				graphSummaries = append(graphSummaries, fmt.Sprintf("=== FALKORDB MULTI-HOP BLAST RADIUS FOR @%s/%s ([*1..4] hops) ===\n%s", m.Kind, m.Name, b))
+				toolsInvoked = append(toolsInvoked, fmt.Sprintf("falkordb_blast_radius(@%s/%s, maxHops=4)", m.Kind, m.Name))
+			}
+
+			// Tool 3: falkordb_service_diagnosis (Service -> Pods -> Logs correlation)
+			lowerQuery := strings.ToLower(req.Query)
+			if m.Kind == "service" || strings.Contains(lowerQuery, "slow") || strings.Contains(lowerQuery, "latency") || strings.Contains(lowerQuery, "timeout") || strings.Contains(lowerQuery, "error") {
+				diagNs := m.Namespace
+				if diagNs == "" {
+					diagNs = namespace
+				}
+				if diagNs == "" {
+					diagNs = "default"
+				}
+				if d, err := graphCtx.DiagnoseService(ctx, diagNs, m.Name); err == nil && d != "" {
+					graphSummaries = append(graphSummaries, fmt.Sprintf("=== FALKORDB MULTI-ENTITY SERVICE DIAGNOSIS FOR @service/%s ===\n%s", m.Name, d))
+					toolsInvoked = append(toolsInvoked, fmt.Sprintf("falkordb_diagnose_service(@service/%s)", m.Name))
 				}
 			}
 		}
+
+		// Tool 4: falkordb_attack_paths (Transitive RBAC privilege escalation pathfinding)
+		lowerQ := strings.ToLower(req.Query)
+		if strings.Contains(lowerQ, "rbac") || strings.Contains(lowerQ, "security") || strings.Contains(lowerQ, "privilege") || strings.Contains(lowerQ, "permission") || strings.Contains(lowerQ, "attack") || strings.Contains(lowerQ, "role") || strings.Contains(lowerQ, "access") {
+			targetNs := namespace
+			if targetNs == "" && len(mentions) > 0 {
+				targetNs = mentions[0].Namespace
+			}
+			if ap, err := graphCtx.AttackPathsSummary(ctx, targetNs); err == nil && ap != "" {
+				graphSummaries = append(graphSummaries, "=== FALKORDB RBAC ATTACK PATHS ===\n"+ap)
+				toolsInvoked = append(toolsInvoked, fmt.Sprintf("falkordb_attack_paths(namespace=%s)", targetNs))
+			}
+		}
+
+		// Cluster-wide fallback topology if no specific mention was resolved
 		if len(graphSummaries) == 0 {
 			targetGraphNs := namespace
 			if targetGraphNs == "" && len(mentions) > 0 && mentions[0].Namespace != "" {
@@ -623,20 +668,28 @@ func RunAgentQueryWithStream(
 			}
 			if summary, err := graphCtx.ContextForResource(ctx, "Namespace", targetGraphNs, ""); err == nil && summary != "" {
 				graphSummaries = append(graphSummaries, "=== CLUSTER TOPOLOGY GRAPH CONTEXT ===\n"+summary)
+				toolsInvoked = append(toolsInvoked, fmt.Sprintf("falkordb_namespace_topology(%s)", targetGraphNs))
 			}
 		}
+
 		if len(graphSummaries) > 0 {
 			contextData.WriteString("\n\n" + strings.Join(graphSummaries, "\n\n") + "\n")
+		}
+
+		if len(toolsInvoked) > 0 {
+			stepGraph.Output = fmt.Sprintf("Invoked %d FalkorDB Graph Tools:\n- %s", len(toolsInvoked), strings.Join(toolsInvoked, "\n- "))
+			recordStep(stepGraph)
 		}
 	}
 
 	// Step: Autonomous AI Reasoning & Synthesis
 	stepSynthesis := AgentStep{Step: fmt.Sprintf("%d", len(steps)+1), Description: "Autonomous SRE Diagnosis & Synthesis"}
 	response := &AgentResponse{
-		Query:        req.Query,
-		Steps:        steps,
-		GraphContext: "",
-		Commands:     allCommands,
+		Query:         req.Query,
+		Steps:         steps,
+		GraphContext:  "",
+		Commands:      allCommands,
+		ToolsExecuted: toolsInvoked,
 	}
 
 	// Format conversation history if available
@@ -670,6 +723,7 @@ func RunAgentQueryWithStream(
 				var parsed struct {
 					Summary       string   `json:"summary"`
 					RootCause     string   `json:"rootCause"`
+					GraphAction   string   `json:"graphAction"`
 					Commands      []string `json:"commands"`
 					YAMLPatches   []string `json:"yamlPatches"`
 					CypherQueries []string `json:"cypherQueries"`
@@ -678,6 +732,7 @@ func RunAgentQueryWithStream(
 				if err := parseJSON(cleaned, &parsed); err == nil {
 					response.Summary = parsed.Summary
 					response.RootCause = parsed.RootCause
+					response.GraphAction = parsed.GraphAction
 					if len(parsed.Commands) > 0 {
 						response.Commands = parsed.Commands
 					}
@@ -767,7 +822,6 @@ func generateDefaultFollowUps(mentions []MentionTarget, query string) []string {
 	}
 	return followUps
 }
-
 
 func synthesizeFallbackResponse(
 	query string,

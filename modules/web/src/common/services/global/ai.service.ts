@@ -127,6 +127,8 @@ export interface AgentResponse {
   steps: AgentStep[];
   summary: string;
   rootCause?: string;
+  graphAction?: string;
+  toolsExecuted?: string[];
   commands?: string[];
   yamlPatches?: string[];
   followUps?: string[];
@@ -204,6 +206,53 @@ export interface AttackPath {
   role: string;
   roleKind: string;
   severity: string;
+}
+
+export interface CatalogQuery {
+  name: string;
+  description: string;
+  cypher: string;
+}
+
+export interface DashboardQuery {
+  title: string;
+  cypher: string;
+}
+
+export interface Dashboard {
+  name: string;
+  description: string;
+  queries: DashboardQuery[];
+}
+
+export interface GraphQueryResult {
+  columns: string[];
+  rows: string[][];
+  stats?: string[];
+}
+
+export interface NLQueryResponse {
+  cypher: string;
+  columns: string[];
+  rows: string[][];
+  result?: unknown;
+}
+
+export interface LogEvent {
+  id: string;
+  pod: string;
+  namespace: string;
+  container: string;
+  level: string;
+  timestamp: string;
+  message: string;
+}
+
+export interface ServiceDiagnosis {
+  service: GraphNode;
+  pods: GraphNode[];
+  logEvents: LogEvent[];
+  dependencies: GraphNode[];
 }
 
 @Injectable({providedIn: 'root'})
@@ -351,8 +400,8 @@ export class AIService {
     return this.http.get<GraphStatus>(`${this.apiBase}/graph/status`);
   }
 
-  executeGraphQuery(cypher: string): Observable<unknown> {
-    return this.http.post<unknown>(`${this.apiBase}/graph/query`, {cypher});
+  executeGraphQuery(cypher: string): Observable<GraphQueryResult> {
+    return this.http.post<GraphQueryResult>(`${this.apiBase}/graph/query`, {cypher});
   }
 
   getBlastRadius(kind: string, namespace: string, name: string): Observable<BlastRadiusResult> {
@@ -384,4 +433,65 @@ export class AIService {
   syncGraph(): Observable<void> {
     return this.http.post<void>(`${this.apiBase}/graph/sync`, {});
   }
+
+  getQueryCatalog(): Observable<CatalogQuery[]> {
+    return this.http.get<CatalogQuery[]>(`${this.apiBase}/graph/catalog`);
+  }
+
+  runNLQuery(question: string): Observable<NLQueryResponse> {
+    return this.http.post<NLQueryResponse>(`${this.apiBase}/graph/nl-query`, {question});
+  }
+
+  listDashboards(): Observable<Dashboard[]> {
+    return this.http.get<Dashboard[]>(`${this.apiBase}/graph/dashboards`);
+  }
+
+  saveDashboard(dashboard: Dashboard): Observable<void> {
+    return this.http.post<void>(`${this.apiBase}/graph/dashboards`, dashboard);
+  }
+
+  deleteDashboard(name: string): Observable<void> {
+    return this.http.delete<void>(`${this.apiBase}/graph/dashboards/${encodeURIComponent(name)}`);
+  }
+
+  diagnoseService(namespace: string, name: string): Observable<ServiceDiagnosis> {
+    return this.http.get<ServiceDiagnosis>(`${this.apiBase}/graph/diagnose/${namespace}/${name}`);
+  }
+}
+
+/**
+ * Unwraps streaming AI response tokens, extracting markdown summary if structured JSON
+ * or markdown code blocks were emitted by the model.
+ */
+export function extractStreamingSummary(raw: string): string {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('```json') || trimmed.startsWith('```')) {
+    const summaryMatch = trimmed.match(/"summary"\s*:\s*"/);
+    if (summaryMatch && summaryMatch.index !== undefined) {
+      const startIndex = summaryMatch.index + summaryMatch[0].length;
+      const rest = trimmed.slice(startIndex);
+      let isEscaped = false;
+      let endIndex = -1;
+      for (let i = 0; i < rest.length; i++) {
+        const c = rest[i];
+        if (c === '\\') {
+          isEscaped = !isEscaped;
+        } else if (c === '"' && !isEscaped) {
+          endIndex = i;
+          break;
+        } else {
+          isEscaped = false;
+        }
+      }
+      const rawSummary = endIndex >= 0 ? rest.slice(0, endIndex) : rest;
+      return rawSummary
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+    }
+    return '';
+  }
+  return raw;
 }

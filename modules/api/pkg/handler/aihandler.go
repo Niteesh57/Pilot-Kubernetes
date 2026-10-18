@@ -33,6 +33,46 @@ import (
 	"k8s.io/klog/v2"
 )
 
+type nlQueryRequest struct {
+	Question string `json:"question"`
+}
+
+type nlQueryResponse struct {
+	Cypher  string      `json:"cypher"`
+	Columns []string    `json:"columns"`
+	Rows    [][]string  `json:"rows"`
+	Result  interface{} `json:"result,omitempty"`
+}
+
+const cypherSchemaPrompt = `You are a FalkorDB (Cypher) query generator for a Kubernetes knowledge graph.
+Graph labels & properties:
+- Pod: name, namespace, status, phase, nodeName, restarts, cpuMilli, memoryMi
+- Deployment: name, namespace, desired, ready, available, replicas, status
+- StatefulSet / DaemonSet / Job: name, namespace, desired, ready, replicas, status
+- Service: name, namespace, type, clusterIP, status
+- Node: name, ready, status
+Relationships:
+- (Pod)-[:RUNS_ON]->(Node)
+- (Pod)-[:IN_NAMESPACE]->(Namespace)
+- (Pod)-[:MANAGED_BY]->(Deployment|StatefulSet|DaemonSet)
+- (Service)-[:SELECTS]->(Pod)
+- (Service)-[:EXPOSES]->(Deployment)
+- (Ingress)-[:ROUTES_TO]->(Service)
+- (Pod)-[:USES_ACCOUNT]->(ServiceAccount)
+- (Pod)-[:MOUNTS_CONFIG]->(ConfigMap)
+- (Pod)-[:MOUNTS_SECRET]->(Secret)
+- (Pod)-[:CLAIMS_STORAGE]->(PersistentVolumeClaim)
+- (ServiceAccount)-[:BOUND_BY]->(RoleBinding|ClusterRoleBinding)
+- (RoleBinding|ClusterRoleBinding)-[:GRANTS]->(Role|ClusterRole)
+- (Pod)-[:EMITTED]->(LogEvent)
+
+Important Guidelines:
+1. Always return a valid, read-only Cypher query (never CREATE, DELETE, MERGE, SET, DROP, REMOVE).
+2. For top CPU pods: MATCH (p:Pod) RETURN p.name, p.namespace, COALESCE(p.cpuMilli, 0) AS cpu_milli, COALESCE(p.memoryMi, 0) AS mem_mi ORDER BY cpu_milli DESC LIMIT 10
+3. For finding replicas of workloads: MATCH (d:Deployment) RETURN d.name, d.namespace, d.replicas, d.desired, d.available, d.status
+4. For which pod consumed the most CPU and find replicas: OPTIONAL MATCH (p:Pod)-[:MANAGED_BY]->(d:Deployment) RETURN p.name, p.namespace, COALESCE(p.cpuMilli, 0) AS cpu_milli, d.name AS deployment, d.replicas AS replicas ORDER BY cpu_milli DESC LIMIT 10
+5. Do NOT include markdown fences, comments, or explanations. Output ONLY the raw Cypher query.`
+
 // installAIRoutes registers all AI Platform routes on the given WebService.
 // Call this from CreateHTTPAPIHandler after wsContainer.Add(apiV1Ws).
 func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
@@ -146,6 +186,35 @@ func (apiHandler *APIHandler) installAIRoutes(ws *restful.WebService) {
 	ws.Route(ws.POST("/graph/sync").To(apiHandler.handleGraphSync).
 		Doc("Triggers an immediate cluster-to-graph synchronization cycle").
 		Returns(http.StatusOK, "OK", nil))
+
+	ws.Route(ws.GET("/graph/catalog").To(apiHandler.handleGraphCatalog).
+		Doc("Returns the curated Cypher query catalog").
+		Returns(http.StatusOK, "OK", []graph.CatalogQuery{}))
+
+	ws.Route(ws.POST("/graph/nl-query").To(apiHandler.handleNLQuery).
+		Doc("Translates a natural-language question into a read-only Cypher query and runs it").
+		Reads(nlQueryRequest{}).
+		Returns(http.StatusOK, "OK", nlQueryResponse{}))
+
+	ws.Route(ws.GET("/graph/dashboards").To(apiHandler.handleListDashboards).
+		Doc("Returns saved custom dashboards").
+		Returns(http.StatusOK, "OK", []graph.Dashboard{}))
+
+	ws.Route(ws.POST("/graph/dashboards").To(apiHandler.handleSaveDashboard).
+		Doc("Saves a custom dashboard to the graph").
+		Reads(graph.Dashboard{}).
+		Returns(http.StatusOK, "OK", nil))
+
+	ws.Route(ws.DELETE("/graph/dashboards/{name}").To(apiHandler.handleDeleteDashboard).
+		Doc("Deletes a saved custom dashboard").
+		Param(ws.PathParameter("name", "dashboard name")).
+		Returns(http.StatusOK, "OK", nil))
+
+	ws.Route(ws.GET("/graph/diagnose/{namespace}/{name}").To(apiHandler.handleDiagnoseService).
+		Doc("Correlates a service with pods, metrics, and recent logs").
+		Param(ws.PathParameter("namespace", "namespace of the service")).
+		Param(ws.PathParameter("name", "name of the service")).
+		Returns(http.StatusOK, "OK", graph.ServiceDiagnosis{}))
 
 	// ─── Traffic Topology ─────────────────────────────────────────
 	ws.Route(ws.GET("/traffic").To(apiHandler.handleTraffic).
@@ -381,7 +450,6 @@ func (apiHandler *APIHandler) handleAgentStream(request *restful.Request, respon
 	sendSSE("done", result)
 }
 
-
 func (apiHandler *APIHandler) handleAIResources(request *restful.Request, response *restful.Response) {
 	k8sClient, err := getK8sClient(request.Request)
 	if err != nil {
@@ -428,12 +496,12 @@ func (apiHandler *APIHandler) handleGraphQuery(request *restful.Request, respons
 		return
 	}
 
-	result, err := gc.Query(request.Request.Context(), body.Cypher)
+	tabular, err := gc.QueryTabular(request.Request.Context(), body.Cypher)
 	if err != nil {
 		errors.HandleInternalError(response, err)
 		return
 	}
-	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
+	_ = response.WriteHeaderAndEntity(http.StatusOK, tabular)
 }
 
 func (apiHandler *APIHandler) handleBlastRadius(request *restful.Request, response *restful.Response) {
@@ -518,6 +586,135 @@ func (apiHandler *APIHandler) handleGraphSync(request *restful.Request, response
 	response.WriteHeader(http.StatusOK)
 }
 
+func (apiHandler *APIHandler) handleGraphCatalog(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+	_ = response.WriteHeaderAndEntity(http.StatusOK, gc.QueryCatalog())
+}
+
+func (apiHandler *APIHandler) handleNLQuery(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+
+	body := new(nlQueryRequest)
+	if err := request.ReadEntity(body); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+
+	k8sClient, err := getK8sClient(request.Request)
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	q := strings.TrimSpace(body.Question)
+	upper := strings.ToUpper(q)
+	var cypher string
+
+	if strings.HasPrefix(upper, "MATCH") || strings.HasPrefix(upper, "RETURN") || strings.HasPrefix(upper, "CALL") {
+		// User provided a direct Cypher query
+		cypher = cleanCypher(q)
+	} else {
+		settings := ai.LoadAISettings(k8sClient)
+		adapter, err := ai.NewAdapter(settings)
+		if err != nil {
+			errors.HandleInternalError(response, err)
+			return
+		}
+
+		rawQuery, err := adapter.Chat(request.Request.Context(), cypherSchemaPrompt, q)
+		if err != nil {
+			errors.HandleInternalError(response, err)
+			return
+		}
+		cypher = cleanCypher(rawQuery)
+	}
+
+	if err := validateReadOnlyCypher(cypher); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+
+	tabular, err := gc.QueryTabular(request.Request.Context(), cypher)
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	_ = response.WriteHeaderAndEntity(http.StatusOK, nlQueryResponse{
+		Cypher:  cypher,
+		Columns: tabular.Columns,
+		Rows:    tabular.Rows,
+	})
+}
+
+func (apiHandler *APIHandler) handleListDashboards(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+	dashboards, err := gc.ListDashboards(request.Request.Context())
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	_ = response.WriteHeaderAndEntity(http.StatusOK, dashboards)
+}
+
+func (apiHandler *APIHandler) handleSaveDashboard(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+	dashboard := new(graph.Dashboard)
+	if err := request.ReadEntity(dashboard); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	if err := gc.SaveDashboard(request.Request.Context(), *dashboard); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusOK)
+}
+
+func (apiHandler *APIHandler) handleDeleteDashboard(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+	name := request.PathParameter("name")
+	if err := gc.DeleteDashboard(request.Request.Context(), name); err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusOK)
+}
+
+func (apiHandler *APIHandler) handleDiagnoseService(request *restful.Request, response *restful.Response) {
+	gc := getGraphClient(request)
+	if gc == nil {
+		errors.HandleInternalError(response, errGraphNotConfigured())
+		return
+	}
+	namespace := request.PathParameter("namespace")
+	name := request.PathParameter("name")
+	result, err := gc.DiagnoseService(request.Request.Context(), namespace, name)
+	if err != nil {
+		errors.HandleInternalError(response, err)
+		return
+	}
+	_ = response.WriteHeaderAndEntity(http.StatusOK, result)
+}
+
 // ─── Traffic Handler ──────────────────────────────────────────────────────────
 
 func (apiHandler *APIHandler) handleTraffic(request *restful.Request, response *restful.Response) {
@@ -576,6 +773,31 @@ func (p *graphContextProvider) BlastRadiusSummary(ctx context.Context, kind, nam
 	return result.Describe(), nil
 }
 
+func (p *graphContextProvider) DiagnoseService(ctx context.Context, namespace, name string) (string, error) {
+	result, err := p.client.DiagnoseService(ctx, namespace, name)
+	if err != nil {
+		return "", err
+	}
+	return result.Describe(), nil
+}
+
+func (p *graphContextProvider) AttackPathsSummary(ctx context.Context, namespace string) (string, error) {
+	paths, err := p.client.AttackPaths(ctx, namespace)
+	if err != nil {
+		return "", err
+	}
+	if len(paths) == 0 {
+		return "No critical RBAC attack paths detected in namespace.", nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d sensitive RBAC attack paths in FalkorDB:\n", len(paths)))
+	for _, path := range paths {
+		sb.WriteString(fmt.Sprintf("- ServiceAccount '%s' -> %s '%s' -> %s '%s' [%s severity]\n",
+			path.ServiceAccount, path.BindingKind, path.Binding, path.RoleKind, path.Role, path.Severity))
+	}
+	return sb.String(), nil
+}
+
 func newGraphContextProvider(request *restful.Request) ai.GraphContextProvider {
 	gc := getGraphClient(request)
 	if gc == nil {
@@ -632,6 +854,16 @@ func enrichSecurityAttackPaths(request *restful.Request, namespace string, resul
 			YAMLPatch: fmt.Sprintf("kubectl delete %s %s", strings.ToLower(kind), p.Binding),
 		})
 	}
+}
+
+// cleanCypher strips markdown fences and whitespace from a model-generated query.
+func cleanCypher(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "```cypher")
+	s = strings.TrimPrefix(s, "```sql")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return strings.TrimSpace(s)
 }
 
 // validateReadOnlyCypher rejects queries containing mutating Cypher clauses.

@@ -230,6 +230,15 @@ limitations under the License.
           <div class="kd-markdown kd-rootcause-body" [innerHTML]="turn.response.rootCause | kdMarkdown"></div>
         </div>
 
+        <!-- Graph-Informed Action Banner -->
+        <div *ngIf="turn.response?.graphAction" class="kd-graph-action-banner">
+          <div class="kd-graph-action-header">
+            <mat-icon>bolt</mat-icon>
+            <span>Graph-Directed Action (Connected Data Decision)</span>
+          </div>
+          <div class="kd-graph-action-text">{{ turn.response.graphAction }}</div>
+        </div>
+
         <!-- Inline Recommended Remediation Commands -->
         <div *ngIf="turn.response?.commands?.length" class="kd-inline-group">
           <div class="kd-inline-group-title">
@@ -258,6 +267,20 @@ limitations under the License.
               </button>
             </div>
             <pre class="kd-code-block">{{ patch }}</pre>
+          </div>
+        </div>
+
+        <!-- Inline Executed / Recommended FalkorDB Cypher Queries -->
+        <div *ngIf="turn.response?.cypherQueries?.length" class="kd-inline-group">
+          <div class="kd-inline-group-title">
+            <mat-icon style="color: #b388ff;">hub</mat-icon>
+            <span>FalkorDB Graph Algorithm &amp; Verification Cypher</span>
+          </div>
+          <div class="kd-command-row kd-cypher-row" *ngFor="let cypher of turn.response.cypherQueries">
+            <code>{{ cypher }}</code>
+            <button mat-icon-button (click)="copyToClipboard(cypher, 'Cypher query copied')" title="Copy Cypher query">
+              <mat-icon>content_copy</mat-icon>
+            </button>
           </div>
         </div>
 
