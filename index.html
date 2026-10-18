@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engineering Pilot Kubernetes: Giving the Kubernetes Dashboard a Graph Brain with FalkorDB</title>
+  <meta name="description" content="An engineering post explaining how we took the official Kubernetes Dashboard, embedded FalkorDB, and built an autonomous SRE agent that reasons over connected infrastructure data.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Official Kubernetes Dashboard Theme Colors */
+      --k8s-blue: #326ce5;
+      --k8s-blue-hover: #2557b8;
+      --k8s-blue-light: rgba(50, 108, 229, 0.12);
+      --bg-body: #1e1e1e;
+      --bg-surface: #252526;
+      --bg-card: #2d2d30;
+      --bg-code: #141414;
+      --border-color: #3e3e42;
+      --border-subtle: #2d2d30;
+      
+      --text-primary: #ffffff;
+      --text-secondary: #cccccc;
+      --text-muted: #969696;
+      --text-link: #4fc1ff;
+      
+      --status-success: #4ec9b0;
+      --status-warning: #ce9178;
+      --status-error: #f14c4c;
+      --status-tag: #3794ff;
+
+      --font-body: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-code: 'Roboto Mono', Consolas, "Courier New", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-body);
+      color: var(--text-secondary);
+      font-family: var(--font-body);
+      line-height: 1.7;
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Kubernetes Dashboard Header Style */
+    header.k8s-header {
+      background-color: var(--k8s-blue);
+      color: #ffffff;
+      padding: 0.85rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+
+    .k8s-logo-area {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: #ffffff;
+      font-size: 1.15rem;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+    }
+
+    .k8s-logo-icon {
+      width: 32px;
+      height: 32px;
+    }
+
+    .header-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .header-links a {
+      color: #ffffff;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 400;
+      opacity: 0.9;
+      transition: opacity 0.2s;
+    }
+
+    .header-links a:hover {
+      opacity: 1;
+      text-decoration: underline;
+    }
+
+    .gh-btn {
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      color: #ffffff !important;
+      padding: 0.35rem 0.85rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      text-decoration: none !important;
+      transition: background 0.2s;
+    }
+
+    .gh-btn:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    /* Blog Article Layout */
+    .blog-container {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 6rem;
+    }
+
+    /* Article Meta & Title */
+    .article-header {
+      margin-bottom: 2.5rem;
+      padding-bottom: 2rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .category-tag {
+      display: inline-block;
+      background: var(--k8s-blue-light);
+      color: #70a5ff;
+      border: 1px solid rgba(50, 108, 229, 0.3);
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+
+    h1.article-title {
+      font-size: 2.35rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.25;
+      margin-bottom: 1.2rem;
+      letter-spacing: -0.02em;
+    }
+
+    .article-meta {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+
+    .author-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .author-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--k8s-blue);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    /* Blog Typography */
+    h2.blog-heading {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 2.8rem 0 1rem;
+      padding-bottom: 0.4rem;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    h2.blog-heading span.section-num {
+      color: var(--k8s-blue);
+      font-family: var(--font-code);
+      font-size: 1.2rem;
+    }
+
+    h3.blog-subheading {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 1.6rem 0 0.6rem;
+    }
+
+    p {
+      margin-bottom: 1.25rem;
+      color: var(--text-secondary);
+    }
+
+    p strong {
+      color: var(--text-primary);
+    }
+
+    a {
+      color: var(--text-link);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    ul, ol {
+      margin: 0 0 1.25rem 1.5rem;
+      color: var(--text-secondary);
+    }
+
+    li {
+      margin-bottom: 0.4rem;
+    }
+
+    /* Dashboard Style Cards */
+    .k8s-card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+
+    .k8s-callout {
+      border-left: 4px solid var(--k8s-blue);
+      background-color: rgba(50, 108, 229, 0.08);
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+      border-radius: 0 4px 4px 0;
+    }
+
+    .k8s-callout.alert {
+      border-left-color: var(--status-warning);
+      background-color: rgba(206, 145, 120, 0.08);
+    }
+
+    .k8s-callout-title {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 0.95rem;
+      margin-bottom: 0.35rem;
+    }
+
+    /* Code Blocks */
+    .code-wrapper {
+      background-color: var(--bg-code);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      margin: 1.25rem 0;
+      overflow: hidden;
+      font-family: var(--font-code);
+      font-size: 0.88rem;
+    }
+
+    .code-top-bar {
+      background-color: var(--bg-surface);
+      border-bottom: 1px solid var(--border-color);
+      padding: 0.4rem 0.85rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .copy-button {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      border-radius: 3px;
+      padding: 0.15rem 0.5rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+      font-family: var(--font-body);
+      transition: all 0.15s ease;
+    }
+
+    .copy-button:hover {
+      background: var(--bg-card);
+      color: #ffffff;
+      border-color: var(--k8s-blue);
+    }
+
+    pre {
+      padding: 1rem;
+      overflow-x: auto;
+      line-height: 1.55;
+      color: #d4d4d4;
+    }
+
+    code {
+      font-family: var(--font-code);
+    }
+
+    code.inline {
+      background-color: rgba(255, 255, 255, 0.08);
+      color: #e0e0e0;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.88em;
+    }
+
+    /* Codebase Table */
+    table.k8s-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.25rem 0;
+      font-size: 0.9rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    table.k8s-table th, table.k8s-table td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    table.k8s-table th {
+      background-color: rgba(255, 255, 255, 0.03);
+      color: var(--text-primary);
+      font-weight: 500;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    table.k8s-table tr:hover td {
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      h1.article-title {
+        font-size: 1.85rem;
+      }
+      .blog-container {
+        padding: 1.5rem 1rem 4rem;
+      }
+      header.k8s-header {
+        padding: 0.75rem 1rem;
+      }
+    }
+
+    /* Footer */
+    footer.k8s-footer {
+      border-top: 1px solid var(--border-color);
+      background-color: var(--bg-surface);
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Kubernetes Dashboard-style Navbar -->
+  <header class="k8s-header">
+    <a href="#" class="k8s-logo-area">
+      <!-- Kubernetes Wheel SVG -->
+      <svg class="k8s-logo-icon" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2L3.5 6.9V17.1L12 22L20.5 17.1V6.9L12 2Z" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>
+        <path d="M12 7.5L7.5 10V15L12 17.5L16.5 15V10L12 7.5Z" stroke="#ffffff" stroke-width="1.4" stroke-linejoin="round"/>
+        <line x1="12" y1="2" x2="12" y2="7.5" stroke="#ffffff" stroke-width="1.5"/>
+        <line x1="20.5" y1="6.9" x2="16.5" y2="10" stroke="#ffffff" stroke-width="1.5"/>
+        <line x1="20.5" y1="17.1" x2="16.5" y2="15" stroke="#ffffff" stroke-width="1.5"/>
+        <line x1="12" y1="22" x2="12" y2="17.5" stroke="#ffffff" stroke-width="1.5"/>
+        <line x1="3.5" y1="17.1" x2="7.5" y2="15" stroke="#ffffff" stroke-width="1.5"/>
+        <line x1="3.5" y1="6.9" x2="7.5" y2="10" stroke="#ffffff" stroke-width="1.5"/>
+      </svg>
+      <span>Pilot Kubernetes</span>
+    </a>
+    <div class="header-links">
+      <a href="#engineering-story">The Story</a>
+      <a href="#codebase-tour">Code Tour</a>
+      <a href="#why-falkordb">Why FalkorDB</a>
+      <a href="#installation-guide">Installation</a>
+      <a href="https://github.com/Niteesh57/Pilot-Kubernetes" target="_blank" class="gh-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+        </svg>
+        GitHub
+      </a>
+    </div>
+  </header>
+
+  <main class="blog-container">
+
+    <!-- Article Header -->
+    <article>
+      <div class="article-header">
+        <span class="category-tag">Engineering Blog · Graph Hacks 2026</span>
+        <h1 class="article-title">Re-Engineering Kubernetes Dashboard with a Graph Brain: How We Integrated FalkorDB</h1>
+        <div class="article-meta">
+          <div class="author-badge">
+            <div class="author-avatar">P</div>
+            <span>Pilot Kubernetes Team (S7XGAM)</span>
+          </div>
+          <span>•</span>
+          <span>Track: Agents That Act on Connected Data</span>
+          <span>•</span>
+          <span>Apache License 2.0</span>
+        </div>
+      </div>
+
+      <!-- SECTION 1: THE STORY -->
+      <section id="engineering-story">
+        <h2 class="blog-heading"><span class="section-num">01</span> Where We Started: The Disconnected Dashboard Problem</h2>
+        
+        <p>
+          The official <strong>Kubernetes Dashboard</strong> has been the standard web UI for clusters for nearly a decade. But after years of serving the ecosystem, it was officially archived. More fundamentally, its architectural assumptions dated back to the early days of Kubernetes: <strong>it organized the cluster into disconnected inventory tables</strong>.
+        </p>
+
+        <p>
+          Pods sit on one tab, Services on another, ConfigMaps on a third, and RBAC bindings on a fourth. When production goes down at 2 AM, resources don't fail in isolation:
+        </p>
+
+        <ul>
+          <li>An Ingress routes to a Service that changed its port mapping.</li>
+          <li>A Deployment rolls out a pod that mounts a Secret that doesn't exist.</li>
+          <li>An unprivileged ServiceAccount inherits cluster-admin permissions through a transitive rolebinding chain.</li>
+        </ul>
+
+        <p>
+          In a standard dashboard, an engineer must manually hop through 10 different pages to piece together the incident.
+        </p>
+
+        <div class="k8s-callout alert">
+          <div class="k8s-callout-title">The Problem With Naive "AI on Kubernetes"</div>
+          <p style="margin: 0; font-size: 0.92rem;">
+            If you dump raw pod logs into a standard LLM, it hallucinates. Because it has no graph of the cluster, it blindly suggests <em>"restart the pod"</em> or <em>"increase replica memory"</em>—completely unaware that restarting the pod will trigger cascading timeouts across three upstream microservices.
+          </p>
+        </div>
+
+        <p>
+          <strong>Kubernetes is fundamentally a graph.</strong> Pods run on Nodes, Services select Pods, Ingresses route to Services, and ServiceAccounts bind to Roles. To solve cluster troubleshooting, our AI agent needed to see the graph.
+        </p>
+      </section>
+
+      <!-- SECTION 2: HOW WE INTEGRATED FALKORDB -->
+      <section id="why-falkordb">
+        <h2 class="blog-heading"><span class="section-num">02</span> The Core Integration: Embedding FalkorDB as the Nervous System</h2>
+
+        <p>
+          Instead of building an external toy script, we forked the Go + Angular Kubernetes Dashboard repository and embedded <strong>FalkorDB</strong> directly into the control loop.
+        </p>
+
+        <p>
+          FalkorDB is an ultra-low latency, in-memory graph database running on the Redis protocol using openCypher. We chose it because Kubernetes state changes constantly; we needed sub-millisecond multi-hop graph traversals without the operational overhead of heavy Java-based graph engines.
+        </p>
+
+        <div class="k8s-card">
+          <h3 class="blog-subheading" style="margin-top: 0;">How the Relational Sync Works in Real Time</h3>
+          <ol>
+            <li><strong>Continuous Topology Syncer:</strong> A background Go goroutine (<code class="inline">modules/api/pkg/graph/syncer.go</code>) polls Kubernetes API resources every 60 seconds and syncs them into FalkorDB using <code class="inline">MERGE</code> Cypher queries.</li>
+            <li><strong>Telemetry Streamer:</strong> A secondary syncer (<code class="inline">modules/api/pkg/graph/telemetry.go</code>) streams live CPU/memory metrics from the sidecar scraper and tails pod logs, classifying warnings and errors directly into rolling <code class="inline">(:Pod)-[:EMITTED]->(:LogEvent)</code> graph nodes.</li>
+            <li><strong>The Agent Interface:</strong> When an engineer asks a question or an alert fires, the Autonomous SRE Agent calls FalkorDB as an internal tool rather than guessing.</li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- SECTION 3: CODE TOUR -->
+      <section id="codebase-tour">
+        <h2 class="blog-heading"><span class="section-num">03</span> Code Tour: What Part of the Codebase We Engineered</h2>
+
+        <p>
+          To keep the platform enterprise-grade, we maintained the existing authentication, RBAC, and client-go mechanics, and built four specialized modules on top:
+        </p>
+
+        <table class="k8s-table">
+          <thead>
+            <tr>
+              <th style="width: 28%;">Module & Path</th>
+              <th style="width: 22%;">Technology</th>
+              <th>What We Engineered</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <strong>FalkorDB Engine</strong><br>
+                <code class="inline">modules/api/pkg/graph/</code>
+              </td>
+              <td>Go · go-redis/v9 · Cypher</td>
+              <td>
+                Built the client connection, background topology syncer (<code class="inline">syncer.go</code>), live telemetry and log event ingestion (<code class="inline">telemetry.go</code>), and typed Cypher query mapper (<code class="inline">result.go</code>).
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Autonomous SRE Agent</strong><br>
+                <code class="inline">modules/api/pkg/ai/</code>
+              </td>
+              <td>Go · Multi-LLM Adapters</td>
+              <td>
+                Engineered the autonomous agent loop (<code class="inline">agent.go</code>). The agent invokes 4 FalkorDB tools: <code class="inline">falkordb_explore</code>, <code class="inline">falkordb_blast_radius</code>, <code class="inline">falkordb_diagnose_service</code>, and <code class="inline">falkordb_attack_paths</code> to formulate grounded YAML patches.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Interactive Web UI</strong><br>
+                <code class="inline">modules/web/src/ai/</code>
+              </td>
+              <td>Angular · SVG Canvas</td>
+              <td>
+                Created a clean 5-tier architecture canvas (Ingress &rarr; Service &rarr; Workload &rarr; Pod &rarr; Storage), streaming AI diagnostics studio with step-by-step reasoning tokens, and an RBAC attack path visualizer.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Helm Chart Bundling</strong><br>
+                <code class="inline">charts/kubernetes-dashboard/</code>
+              </td>
+              <td>Helm v3 · Kubernetes YAML</td>
+              <td>
+                Packaged FalkorDB Deployment, Service, and PVC directly into the official Helm templates, pre-wiring zero-config cluster-local communication at <code class="inline">falkordb:6379</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 class="blog-subheading">Core Cypher Queries Driving the Agent</h3>
+        
+        <p>
+          The agent does not guess. It executes exact openCypher queries against FalkorDB:
+        </p>
+
+        <div class="code-wrapper">
+          <div class="code-top-bar">
+            <span>Cypher: Multi-Hop Blast Radius (pkg/graph/result.go)</span>
+            <button class="copy-button" onclick="copySnippet('code-blast')">Copy</button>
+          </div>
+          <pre><code id="code-blast">// What breaks downstream if this workload goes down? (1 to 4 hops)
+MATCH (n:Service {name: $name, namespace: $namespace})<-[*1..4]-(dependent)
+RETURN DISTINCT dependent.name, dependent.namespace, labels(dependent), dependent.status;
+
+// What prerequisites does this workload need upstream? (1 to 4 hops)
+MATCH (n:Service {name: $name, namespace: $namespace})-[*1..4]->(dependency)
+RETURN DISTINCT dependency.name, dependency.namespace, labels(dependency), dependency.status;</code></pre>
+        </div>
+
+        <div class="code-wrapper">
+          <div class="code-top-bar">
+            <span>Cypher: Transitive RBAC Privilege Escalation (pkg/graph/result.go)</span>
+            <button class="copy-button" onclick="copySnippet('code-rbac')">Copy</button>
+          </div>
+          <pre><code id="code-rbac">// Trace indirect privilege escalation chains through rolebindings
+MATCH (sa:ServiceAccount {namespace: $namespace})-[:BOUND_BY]->(b)-[:GRANTS]->(r)
+WHERE (r:Role OR r:ClusterRole) AND r.sensitive = 'true'
+RETURN sa.name AS serviceAccount, b.name AS binding, r.name AS role, labels(r)[0] AS roleKind;</code></pre>
+        </div>
+      </section>
+
+      <!-- SECTION 4: RULE 3 TEST -->
+      <section>
+        <h2 class="blog-heading"><span class="section-num">04</span> Why FalkorDB is Critical (The Rule 3 Test)</h2>
+        
+        <p>
+          Hackathon Rule 3 mandates that the graph must do real work: <em>"if the product still works once FalkorDB is taken out, the graph is decoration rather than the thing the product runs on."</em>
+        </p>
+
+        <p>
+          In Pilot Kubernetes, FalkorDB is the engine:
+        </p>
+
+        <div class="k8s-callout">
+          <div class="k8s-callout-title">What happens if you turn FalkorDB off?</div>
+          <ul style="margin: 0.5rem 0 0 1.2rem; font-size: 0.92rem;">
+            <li><strong>Blast Radius fails:</strong> The platform cannot traverse upstream or downstream relationships to calculate impact.</li>
+            <li><strong>The AI SRE Agent goes blind:</strong> Tool invocations fail; the agent cannot ground its diagnosis in cluster topology.</li>
+            <li><strong>Security audit stops:</strong> Transitive RBAC attack paths cannot be evaluated without graph pathfinding.</li>
+            <li><strong>Telemetry correlation disappears:</strong> The ability to link Ingresses &rarr; Services &rarr; Pods &rarr; LogEvents in a single query is severed.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- SECTION 5: INSTALLATION GUIDE (SIMPLE, STEP-BY-STEP) -->
+      <section id="installation-guide">
+        <h2 class="blog-heading"><span class="section-num">05</span> How to Run It: Complete Installation Guide</h2>
+
+        <p>
+          We made deploying Pilot Kubernetes as simple as the standard Kubernetes Dashboard. Everything—including FalkorDB—is pre-configured.
+        </p>
+
+        <h3 class="blog-subheading">Step 1: Deploy with Helm (Recommended)</h3>
+        <p>Run this single command from the root of the repository:</p>
+
+        <div class="code-wrapper">
+          <div class="code-top-bar">
+            <span>Terminal</span>
+            <button class="copy-button" onclick="copySnippet('helm-install')">Copy</button>
+          </div>
+          <pre><code id="helm-install"># Deploy Pilot Kubernetes with embedded FalkorDB
+helm upgrade --install pilot-dashboard ./charts/kubernetes-dashboard \
+  --namespace kubernetes-dashboard \
+  --create-namespace \
+  --set falkordb.enabled=true \
+  --set falkordb.persistence.enabled=true
+
+# Wait for all pods to be healthy (1/1 Running)
+kubectl get pods -n kubernetes-dashboard</code></pre>
+        </div>
+
+        <h3 class="blog-subheading">Step 2: Access the Dashboard in Your Browser</h3>
+        <p>Forward local traffic to the web service or Kong API gateway:</p>
+
+        <div class="code-wrapper">
+          <div class="code-top-bar">
+            <span>Terminal (Option A: Direct HTTP, No TLS Warning)</span>
+            <button class="copy-button" onclick="copySnippet('pf-web')">Copy</button>
+          </div>
+          <pre><code id="pf-web">kubectl port-forward -n kubernetes-dashboard \
+  svc/pilot-dashboard-kubernetes-dashboard-web 8080:8000</code></pre>
+        </div>
+        <p style="font-size: 0.9rem; margin-top: -0.5rem;">
+          Open <a href="http://localhost:8080" target="_blank">http://localhost:8080</a> in your browser.
+        </p>
+
+        <div class="code-wrapper">
+          <div class="code-top-bar">
+            <span>Terminal (Option B: Via Kong Gateway TLS)</span>
+            <button class="copy-button" onclick="copySnippet('pf-kong')">Copy</button>
+          </div>
+          <pre><code id="pf-kong">kubectl port-forward -n kubernetes-dashboard \
+  svc/pilot-dashboard-kong-proxy 8443:443</code></pre>
+        </div>
+        <p style="font-size: 0.9rem; margin-top: -0.5rem;">
+          Open <a href="https://localhost:8443" target="_blank">https://localhost:8443</a> *(accept the self-signed TLS cert)*.
+        </p>
+
+        <h3 class="blog-subheading">Step 3: Building Locally with Docker (For Developers)</h3>
+        <p>If you make changes to the Go or Angular source code, build and update the containers:</p>
+
+        <div class="code-wrapper">
+          <div class="code-top-bar">
+            <span>Terminal</span>
+            <button class="copy-button" onclick="copySnippet('docker-build')">Copy</button>
+          </div>
+          <pre><code id="docker-build"># 1. Build Go API backend
+docker build -t pilot-dashboard-api:latest -f modules/api/Dockerfile .
+
+# 2. Build Angular frontend
+docker build -t pilot-dashboard-web:latest -f modules/web/Dockerfile .
+
+# 3. Restart deployments to pick up new images
+kubectl rollout restart deployment/pilot-dashboard-kubernetes-dashboard-api -n kubernetes-dashboard
+kubectl rollout restart deployment/pilot-dashboard-kubernetes-dashboard-web -n kubernetes-dashboard</code></pre>
+        </div>
+
+        <h3 class="blog-subheading">Step 4: Verify FalkorDB & API Sync</h3>
+        <p>Test that FalkorDB is active and storing cluster topology:</p>
+
+        <div class="code-wrapper">
+          <div class="code-top-bar">
+            <span>Terminal</span>
+            <button class="copy-button" onclick="copySnippet('curl-verify')">Copy</button>
+          </div>
+          <pre><code id="curl-verify"># Check graph connection and node/edge count
+curl -s http://localhost:8080/api/v1/graph/status
+# Expected response: {"connected":true,"graphName":"kubepilot","nodeCount":142,"edgeCount":318}</code></pre>
+        </div>
+      </section>
+
+    </article>
+  </main>
+
+  <!-- Kubernetes Dashboard Style Footer -->
+  <footer class="k8s-footer">
+    <div style="max-width: 860px; margin: 0 auto;">
+      <p style="margin-bottom: 0.4rem; color: #ffffff;">
+        <strong>Pilot Kubernetes</strong> — Graph-Augmented Operations Platform
+      </p>
+      <p style="margin-bottom: 0.8rem;">
+        Built for <em>Graph Hacks: Context for AI Agents</em> (Powered by FalkorDB). Track: <strong>Agents That Act on Connected Data</strong>.
+      </p>
+      <p style="color: var(--text-muted); font-size: 0.8rem;">
+        Team: <strong>Pilot Kubernetes</strong> (Code: <code class="inline">S7XGAM</code>) | 
+        Leader: <strong>Nagi Reddy BV</strong> (<a href="https://github.com/b_v_nagireddy">@b_v_nagireddy</a>) | 
+        Member: <strong>Manoj Ks</strong> (<a href="https://github.com/manoj8105">@manoj8105</a>)
+      </p>
+      <p style="color: var(--text-muted); font-size: 0.78rem; margin-top: 0.75rem;">
+        Licensed under the <a href="https://github.com/Niteesh57/Pilot-Kubernetes/blob/master/LICENSE">Apache License 2.0</a>.
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    function copySnippet(id) {
+      const code = document.getElementById(id).innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = event.target;
+        const orig = btn.innerText;
+        btn.innerText = 'Copied!';
+        btn.style.color = '#4ec9b0';
+        btn.style.borderColor = '#4ec9b0';
+        setTimeout(() => {
+          btn.innerText = orig;
+          btn.style.color = '';
+          btn.style.borderColor = '';
+        }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>
